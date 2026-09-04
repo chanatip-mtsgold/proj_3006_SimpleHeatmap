@@ -19,6 +19,9 @@ Sheet: `1MmAn7aVFIdReaMZgxoN-thw-LMtBFna4B5qCKI8kNpU`
   เพิ่ม/ลด/สลับ symbol ทำที่ sheet อย่างเดียว ไม่ต้องแก้โค้ด
 - แถว 2 (BID/ASK) สคริปต์เขียนให้เองอัตโนมัติถ้ายังไม่มี
 - ข้อมูลเริ่ม append ที่แถว 3 เสมอ
+- **Timestamp คือเวลา snapshot ที่ตั้งไว้ (10:00:00) ไม่ใช่เวลาที่รันสคริปต์** — สคริปต์ดึง
+  tick ตัวสุดท้าย ณ หรือก่อน 10:00 พอดี ผ่าน `copy_ticks_range` ดังนั้นรันกี่โมงก็ได้ผลเท่าเดิม
+  (idempotent) และย้อนหลังได้
 - Timestamp เป็น **เวลาไทย (GMT+7)**; MT5 เดินด้วย GMT+0 — เวลาของ tick จริง (UTC)
   ถูกบันทึกไว้ในไฟล์ log เพื่อใช้ตรวจว่าราคาค้าง (stale) หรือไม่
 - symbol ไหนดึงราคาไม่ได้จะเว้นเซลล์ว่างไว้ (ไม่ใส่ 0)
@@ -48,10 +51,16 @@ uv sync
 uv run python simple_heatmap.py --dry-run
 ```
 
-รันจริง:
+รันจริง (snapshot ของ 10:00 วันนี้):
 
 ```bash
 uv run python simple_heatmap.py
+```
+
+ย้อนหลัง (snapshot ของ 10:00 ในวันที่ระบุ):
+
+```bash
+uv run python simple_heatmap.py --date 2026-09-03
 ```
 
 ตั้ง scheduled task (ทุกวันจันทร์–ศุกร์ 10:00):
@@ -69,7 +78,8 @@ schtasks /run /tn SimpleHeatmap
 ## Config
 
 `config.json` — `spreadsheet_id`, `sheet_name` (เว้นว่าง = ใช้ชีตแรก), `log_file`,
-`max_retries`, `retry_delay_seconds`, `timezone`
+`snapshot_time` (เวลาที่ต้องการ snapshot, เวลาไทย), `lookback_minutes`
+(ย้อนหาราคาถอยหลังกี่นาทีถ้าไม่มี tick พอดีเวลานั้น), `timezone`
 
 `MT5_PATH` อ่านจาก `..\.env\Path.env` ที่ใช้ร่วมกันทั้ง repo
 

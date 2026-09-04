@@ -18,8 +18,8 @@ import json
 import logging
 import os
 import sys
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
 from logging.handlers import RotatingFileHandler
 from zoneinfo import ZoneInfo
 
@@ -170,47 +170,90 @@ def ensure_header_row2(ws, layout: list[tuple[str, int]]) -> None:
 # --------------------------------------------------------------------------- #
 # MetaTrader 5
 # --------------------------------------------------------------------------- #
-def fetch_quotes(mt5_path: str, symbols: list[str], retries: int, delay: int) -> dict:
-    """Return {symbol: (bid, ask, tick_utc)}; missing symbols are simply absent."""
+def fetch_quotes(
+    mt5_path: str, symbols: list[str], target_utc: datetime, lookback_minutes: int
+) -> dict:
+    """Snapshot each symbol at `target_utc` — the last tick at or before it.
+
+    copy_ticks_range interprets a naive datetime as MACHINE-LOCAL time and
+    converts it to UTC internally, so the target is handed over as local
+    wall-clock. Tick times come back as genuine UTC epochs (the MT5 feed is
+    GMT+0). Returns {symbol: (bid, ask, tick_utc)}; symbols with no usable
+    tick are absent.
+    """
     if not mt5.initialize(path=mt5_path):
         raise RuntimeError(f"mt5.initialize failed: {mt5.last_error()}")
 
-    quotes: dict[str, tuple[float, float, datetime | None]] = {}
+    naive_to = target_utc.astimezone().replace(tzinfo=None)
+    naive_from = naive_to - timedelta(minutes=lookback_minutes)
+
+    quotes: dict[str, tuple[float, float, datetime]] = {}
     try:
         for sym in symbols:
             if not mt5.symbol_select(sym, True):
                 logger.warning("symbol_select('%s') failed: %s", sym, mt5.last_error())
                 continue
 
-            for attempt in range(1, retries + 1):
-                tick = mt5.symbol_info_tick(sym)
-                if tick and tick.bid > 0 and tick.ask > 0:
-                    tick_utc = datetime.fromtimestamp(tick.time, tz=timezone.utc)
-                    quotes[sym] = (tick.bid, tick.ask, tick_utc)
+            ticks = mt5.copy_ticks_range(sym, naive_from, naive_to, mt5.COPY_TICKS_ALL)
+            if ticks is None or len(ticks) == 0:
+                logger.warning(
+                    "No ticks for '%s' in the %d min before %s UTC: %s",
+                    sym,
+                    lookback_minutes,
+                    target_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                    mt5.last_error(),
+                )
+                continue
+
+            # copy_ticks_range is time-ordered; walk back to the newest usable tick.
+            for t in reversed(ticks):
+                bid, ask = float(t["bid"]), float(t["ask"])
+                if bid > 0 and ask > 0:
+                    quotes[sym] = (bid, ask, datetime.fromtimestamp(t["time"], tz=timezone.utc))
                     break
-                if attempt < retries:
-                    time.sleep(delay)
             else:
-                logger.warning("No valid tick for '%s' after %d attempts.", sym, retries)
+                logger.warning(
+                    "Only zero-priced ticks for '%s' before %s UTC.",
+                    sym,
+                    target_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                )
     finally:
         mt5.shutdown()
 
     return quotes
 
 
+def resolve_target(cfg: dict, date_arg: str | None) -> tuple[datetime, datetime]:
+    """Return (target_local, target_utc) for the configured snapshot time-of-day."""
+    tz = ZoneInfo(cfg.get("timezone", "Asia/Bangkok"))
+    hh, mm = (int(p) for p in cfg.get("snapshot_time", "10:00").split(":"))
+
+    day = (
+        datetime.strptime(date_arg, "%Y-%m-%d").date() if date_arg else datetime.now(tz).date()
+    )
+    target_local = datetime.combine(day, dtime(hh, mm), tzinfo=tz)
+
+    if target_local > datetime.now(tz):
+        raise RuntimeError(f"Snapshot time {target_local:%Y-%m-%d %H:%M %Z} is in the future.")
+
+    return target_local, target_local.astimezone(timezone.utc)
+
+
 # --------------------------------------------------------------------------- #
 # Append
 # --------------------------------------------------------------------------- #
-def build_row(meta: list[str], layout: list[tuple[str, int]], quotes: dict, tz: str) -> list:
+def build_row(
+    meta: list[str], layout: list[tuple[str, int]], quotes: dict, target_local: datetime
+) -> list:
     last_col = layout[-1][1] + 1
     row: list = [""] * last_col
 
-    now = datetime.now(ZoneInfo(tz))
+    # The timestamp is the snapshot time we asked for, not the moment we ran.
     stamp = {
-        "DATE": now.strftime("%Y-%m-%d"),
-        "TIME": now.strftime("%H:%M:%S"),
-        "TIMESTAMP": now.strftime("%Y-%m-%d %H:%M:%S"),
-        "DATETIME": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "DATE": target_local.strftime("%Y-%m-%d"),
+        "TIME": target_local.strftime("%H:%M:%S"),
+        "TIMESTAMP": target_local.strftime("%Y-%m-%d %H:%M:%S"),
+        "DATETIME": target_local.strftime("%Y-%m-%d %H:%M:%S"),
     }
     for i, name in enumerate(meta):
         row[i] = stamp[name]
@@ -241,6 +284,9 @@ def main() -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="Read the layout and quotes but do not write."
     )
+    parser.add_argument(
+        "--date", metavar="YYYY-MM-DD", help="Backfill this date instead of today."
+    )
     args = parser.parse_args()
 
     cfg = load_config()
@@ -256,17 +302,24 @@ def main() -> int:
         logger.info("Meta columns: %s", ", ".join(meta) or "(none)")
         logger.info("Symbols: %s", ", ".join(f"{s}@col{c}" for s, c in layout))
 
+        target_local, target_utc = resolve_target(cfg, args.date)
+        logger.info(
+            "Snapshot at %s local = %s UTC (MT5 feed time).",
+            target_local.strftime("%Y-%m-%d %H:%M:%S"),
+            target_utc.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
         quotes = fetch_quotes(
             cfg["mt5_path"],
             [s for s, _ in layout],
-            cfg.get("max_retries", 3),
-            cfg.get("retry_delay_seconds", 2),
+            target_utc,
+            cfg.get("lookback_minutes", 60),
         )
         if not quotes:
             logger.error("No quotes retrieved from MT5. Not writing a row.")
             return 1
 
-        row = build_row(meta, layout, quotes, cfg.get("timezone", "Asia/Bangkok"))
+        row = build_row(meta, layout, quotes, target_local)
 
         if args.dry_run:
             logger.info("[dry-run] Would append: %s", row)
