@@ -313,7 +313,7 @@ def main() -> int:
             cfg["mt5_path"],
             [s for s, _ in layout],
             target_utc,
-            cfg.get("lookback_minutes", 60),
+            cfg.get("lookback_minutes", 3),
         )
         if not quotes:
             logger.error("No quotes retrieved from MT5. Not writing a row.")

@@ -3,6 +3,6 @@
   "sheet_name": "Data",
   "log_file": "simple_heatmap.log",
   "snapshot_time": "10:00",
-  "lookback_minutes": 60,
+  "lookback_minutes": 3,
   "timezone": "Asia/Bangkok"
 }

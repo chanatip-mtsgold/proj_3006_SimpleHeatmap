@@ -79,7 +79,8 @@ schtasks /run /tn SimpleHeatmap
 
 `config.json` — `spreadsheet_id`, `sheet_name` (เว้นว่าง = ใช้ชีตแรก), `log_file`,
 `snapshot_time` (เวลาที่ต้องการ snapshot, เวลาไทย), `lookback_minutes`
-(ย้อนหาราคาถอยหลังกี่นาทีถ้าไม่มี tick พอดีเวลานั้น), `timezone`
+(ย้อนหาราคาถอยหลังได้กี่นาที — ตั้งไว้ 3 นาที ถ้าเกินนั้นเว้นว่าง เพราะต้องการให้ทุก
+symbol อยู่ ณ เวลาเดียวกันจริง ๆ), `timezone`
 
 `MT5_PATH` อ่านจาก `..\.env\Path.env` ที่ใช้ร่วมกันทั้ง repo
 
