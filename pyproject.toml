@@ -1,0 +1,13 @@
+[project]
+name = "proj-3006-simpleheatmap"
+version = "0.1.0"
+description = "Daily MT5 bid/ask snapshot appended to a Google Sheet for heatmap analysis."
+requires-python = ">=3.11"
+dependencies = [
+    "MetaTrader5>=5.0.45",
+    "python-dotenv>=1.0",
+    "gspread>=6.0",
+    "google-auth>=2.34",
+    "google-auth-oauthlib>=1.2",
+    "tzdata>=2024.1",
+]
