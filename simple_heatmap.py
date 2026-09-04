@@ -18,7 +18,8 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime
 from logging.handlers import RotatingFileHandler
 from zoneinfo import ZoneInfo
@@ -170,10 +171,21 @@ def ensure_header_row2(ws, layout: list[tuple[str, int]]) -> None:
 # --------------------------------------------------------------------------- #
 # MetaTrader 5
 # --------------------------------------------------------------------------- #
-def fetch_quotes(
-    mt5_path: str, symbols: list[str], target_utc: datetime, lookback_minutes: int
-) -> dict:
+@contextmanager
+def mt5_session(mt5_path: str):
+    """Attach to the already-running, already-logged-in terminal."""
+    if not mt5.initialize(path=mt5_path):
+        raise RuntimeError(f"mt5.initialize failed: {mt5.last_error()}")
+    try:
+        yield
+    finally:
+        mt5.shutdown()
+
+
+def fetch_quotes(symbols: list[str], target_utc: datetime, lookback_minutes: int) -> dict:
     """Snapshot each symbol at `target_utc` — the last tick at or before it.
+
+    Call inside an open `mt5_session`.
 
     copy_ticks_range interprets a naive datetime as MACHINE-LOCAL time and
     converts it to UTC internally, so the target is handed over as local
@@ -181,62 +193,94 @@ def fetch_quotes(
     GMT+0). Returns {symbol: (bid, ask, tick_utc)}; symbols with no usable
     tick are absent.
     """
-    if not mt5.initialize(path=mt5_path):
-        raise RuntimeError(f"mt5.initialize failed: {mt5.last_error()}")
-
     naive_to = target_utc.astimezone().replace(tzinfo=None)
     naive_from = naive_to - timedelta(minutes=lookback_minutes)
 
     quotes: dict[str, tuple[float, float, datetime]] = {}
-    try:
-        for sym in symbols:
-            if not mt5.symbol_select(sym, True):
-                logger.warning("symbol_select('%s') failed: %s", sym, mt5.last_error())
-                continue
+    for sym in symbols:
+        if not mt5.symbol_select(sym, True):
+            logger.warning("symbol_select('%s') failed: %s", sym, mt5.last_error())
+            continue
 
-            ticks = mt5.copy_ticks_range(sym, naive_from, naive_to, mt5.COPY_TICKS_ALL)
-            if ticks is None or len(ticks) == 0:
-                logger.warning(
-                    "No ticks for '%s' in the %d min before %s UTC: %s",
-                    sym,
-                    lookback_minutes,
-                    target_utc.strftime("%Y-%m-%d %H:%M:%S"),
-                    mt5.last_error(),
-                )
-                continue
+        ticks = mt5.copy_ticks_range(sym, naive_from, naive_to, mt5.COPY_TICKS_ALL)
+        if ticks is None or len(ticks) == 0:
+            logger.warning(
+                "No ticks for '%s' in the %d min before %s UTC.",
+                sym,
+                lookback_minutes,
+                target_utc.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            continue
 
-            # copy_ticks_range is time-ordered; walk back to the newest usable tick.
-            for t in reversed(ticks):
-                bid, ask = float(t["bid"]), float(t["ask"])
-                if bid > 0 and ask > 0:
-                    quotes[sym] = (bid, ask, datetime.fromtimestamp(t["time"], tz=timezone.utc))
-                    break
-            else:
-                logger.warning(
-                    "Only zero-priced ticks for '%s' before %s UTC.",
-                    sym,
-                    target_utc.strftime("%Y-%m-%d %H:%M:%S"),
-                )
-    finally:
-        mt5.shutdown()
+        # copy_ticks_range is time-ordered; walk back to the newest usable tick.
+        for t in reversed(ticks):
+            bid, ask = float(t["bid"]), float(t["ask"])
+            if bid > 0 and ask > 0:
+                quotes[sym] = (bid, ask, datetime.fromtimestamp(t["time"], tz=timezone.utc))
+                break
+        else:
+            logger.warning(
+                "Only zero-priced ticks for '%s' before %s UTC.",
+                sym,
+                target_utc.strftime("%Y-%m-%d %H:%M:%S"),
+            )
 
     return quotes
 
 
-def resolve_target(cfg: dict, date_arg: str | None) -> tuple[datetime, datetime]:
-    """Return (target_local, target_utc) for the configured snapshot time-of-day."""
+# --------------------------------------------------------------------------- #
+# Which days still need a row
+# --------------------------------------------------------------------------- #
+def snapshot_times(cfg: dict, day: date) -> tuple[datetime, datetime]:
+    """Return (local, utc) datetimes for the configured snapshot time on `day`."""
     tz = ZoneInfo(cfg.get("timezone", "Asia/Bangkok"))
     hh, mm = (int(p) for p in cfg.get("snapshot_time", "10:00").split(":"))
+    local = datetime.combine(day, dtime(hh, mm), tzinfo=tz)
+    return local, local.astimezone(timezone.utc)
 
-    day = (
-        datetime.strptime(date_arg, "%Y-%m-%d").date() if date_arg else datetime.now(tz).date()
-    )
-    target_local = datetime.combine(day, dtime(hh, mm), tzinfo=tz)
 
-    if target_local > datetime.now(tz):
-        raise RuntimeError(f"Snapshot time {target_local:%Y-%m-%d %H:%M %Z} is in the future.")
+def existing_dates(ws) -> set[str]:
+    """Dates already logged, read from column A below the two header rows."""
+    return {v.strip() for v in ws.col_values(1)[FIRST_DATA_ROW - 1 :] if v.strip()}
 
-    return target_local, target_local.astimezone(timezone.utc)
+
+def pending_days(cfg: dict, ws, date_arg: str | None) -> list[date]:
+    """Weekdays whose snapshot time has passed but that have no row yet.
+
+    A skipped day (PC off, task disabled, MT5 down) is picked up by the next
+    successful run instead of being lost, and re-running never duplicates a
+    date that is already in the sheet.
+    """
+    tz = ZoneInfo(cfg.get("timezone", "Asia/Bangkok"))
+    today = datetime.now(tz).date()
+    have = existing_dates(ws)
+
+    if date_arg:
+        wanted = [datetime.strptime(date_arg, "%Y-%m-%d").date()]
+    else:
+        max_back = cfg.get("max_backfill_days", 10)
+        earliest = today - timedelta(days=max_back)
+        # Resume from the day after the newest row; clamp so a long gap (or an
+        # empty sheet) does not reach past the terminal's tick history.
+        newest = max((datetime.strptime(d, "%Y-%m-%d").date() for d in have), default=None)
+        start = max(newest + timedelta(days=1), earliest) if newest else earliest
+        wanted = [
+            start + timedelta(days=i)
+            for i in range((today - start).days + 1)
+            if (start + timedelta(days=i)).weekday() < 5  # skip Sat/Sun
+        ]
+
+    pending = []
+    for day in wanted:
+        if day.strftime("%Y-%m-%d") in have:
+            logger.info("%s already logged — skipping.", day)
+            continue
+        if snapshot_times(cfg, day)[0] > datetime.now(tz):
+            logger.info("%s snapshot time has not passed yet — skipping.", day)
+            continue
+        pending.append(day)
+
+    return pending
 
 
 # --------------------------------------------------------------------------- #
@@ -270,11 +314,12 @@ def build_row(
     return row
 
 
-def append_row(ws, row: list) -> str:
+def append_rows(ws, rows: list[list]) -> str:
     # Rows 1-2 are the two header rows, so data always starts at row 3.
-    target = max(len(ws.col_values(1)) + 1, FIRST_DATA_ROW)
-    rng = f"A{target}:{rowcol_to_a1(target, len(row))}"
-    ws.update(values=[row], range_name=rng, value_input_option="USER_ENTERED")
+    start = max(len(ws.col_values(1)) + 1, FIRST_DATA_ROW)
+    end = start + len(rows) - 1
+    rng = f"A{start}:{rowcol_to_a1(end, len(rows[0]))}"
+    ws.update(values=rows, range_name=rng, value_input_option="USER_ENTERED")
     return rng
 
 
@@ -285,7 +330,10 @@ def main() -> int:
         "--dry-run", action="store_true", help="Read the layout and quotes but do not write."
     )
     parser.add_argument(
-        "--date", metavar="YYYY-MM-DD", help="Backfill this date instead of today."
+        "--date",
+        metavar="YYYY-MM-DD",
+        help="Log only this date (weekend/back-fill window checks aside), instead of "
+        "auto-filling every missing weekday.",
     )
     args = parser.parse_args()
 
@@ -302,32 +350,46 @@ def main() -> int:
         logger.info("Meta columns: %s", ", ".join(meta) or "(none)")
         logger.info("Symbols: %s", ", ".join(f"{s}@col{c}" for s, c in layout))
 
-        target_local, target_utc = resolve_target(cfg, args.date)
-        logger.info(
-            "Snapshot at %s local = %s UTC (MT5 feed time).",
-            target_local.strftime("%Y-%m-%d %H:%M:%S"),
-            target_utc.strftime("%Y-%m-%d %H:%M:%S"),
-        )
+        days = pending_days(cfg, ws, args.date)
+        if not days:
+            logger.info("Nothing to log — the sheet is already up to date.")
+            return 0
 
-        quotes = fetch_quotes(
-            cfg["mt5_path"],
-            [s for s, _ in layout],
-            target_utc,
-            cfg.get("lookback_minutes", 3),
-        )
-        if not quotes:
-            logger.error("No quotes retrieved from MT5. Not writing a row.")
+        symbols = [s for s, _ in layout]
+        lookback = cfg.get("lookback_minutes", 3)
+        rows: list[list] = []
+
+        with mt5_session(cfg["mt5_path"]):
+            for day in days:
+                target_local, target_utc = snapshot_times(cfg, day)
+                logger.info(
+                    "Snapshot at %s local = %s UTC (MT5 feed time).",
+                    target_local.strftime("%Y-%m-%d %H:%M:%S"),
+                    target_utc.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+
+                quotes = fetch_quotes(symbols, target_utc, lookback)
+                if not quotes:
+                    # Market holiday, or tick history no longer reaches back
+                    # this far. Skip the day rather than log an empty row.
+                    logger.warning("No quotes at all for %s — skipping the day.", day)
+                    continue
+
+                rows.append(build_row(meta, layout, quotes, target_local))
+                logger.info("%s: %d/%d symbols.", day, len(quotes), len(layout))
+
+        if not rows:
+            logger.error("No quotes retrieved for any pending day. Nothing written.")
             return 1
 
-        row = build_row(meta, layout, quotes, target_local)
-
         if args.dry_run:
-            logger.info("[dry-run] Would append: %s", row)
+            for r in rows:
+                logger.info("[dry-run] Would append: %s", r)
             return 0
 
         ensure_header_row2(ws, layout)
-        rng = append_row(ws, row)
-        logger.info("Appended %d/%d symbols to %s.", len(quotes), len(layout), rng)
+        rng = append_rows(ws, rows)
+        logger.info("Appended %d row(s) to %s.", len(rows), rng)
         return 0
 
     except Exception:
