@@ -38,6 +38,22 @@ FIRST_ROW = 2
 LAST_ROW = FIRST_ROW + SPAN - 1  # 12
 COLOUR_OFFSET = 14  # B -> P
 
+# Chart scaffolding, all inside the hidden columns below the mirror:
+#   P,Q,R  raw   days | yield | is-prefixed-venue, in Front's column order
+#   T      sorted spill of those three (T,U,V) - nothing may be written to U,V
+#   W,X    the sorted yield split into one column per venue
+CHART_ROW = 14  # header row; data runs CHART_ROW+1 .. CHART_ROW+SPAN
+RAW_COL = 16  # P
+SORT_COL = 20  # T
+SERIES_COL = 23  # W
+
+# Categorical slots 1 and 2 from the dataviz palette, in fixed order.
+VENUE_COLOURS = ["#2a78d6", "#eb6834"]
+
+# Fixed y-axis so the curve is comparable day to day. Widen it if implied carry
+# ever leaves this band - points outside are clipped, not rescaled.
+Y_AXIS = (0.02, 0.07)
+
 # Symbol names sit on odd columns of `Data` row 1; ranges are the same width so
 # FILTER lines them up. CA must exist as a real column (see simple_heatmap).
 SYMS = f"{DATA}!$C$1:$BZ$1"
@@ -130,6 +146,189 @@ def value_cell(row: int, col: str) -> str:
     return f'=IF({p["guard"]},"",IFERROR({live},""))'
 
 
+def curve_block(front, cols: list[str]) -> None:
+    """Feed the term-structure chart: one point per contract, spot-referenced.
+
+    Yield here is the spot row's - a contract's own carry over its own life -
+    which is the only reading where a single TTM belongs on the x-axis.
+    """
+    dr = f"MATCH($A$1,{DATA}!$A:$A,0)"
+    first = CHART_ROW + 1
+    last = CHART_ROW + SPAN
+
+    raw = []
+    for col in cols:
+        name = f"{col}$1"
+        cy = f"MATCH({name},{DATA}!$1:$1,0)"
+        spot_ask = f"INDEX({DATA}!$A:$CA,{dr},MATCH($A$2,{DATA}!$1:$1,0)+1)"
+        y_bid = f"INDEX({DATA}!$A:$CA,{dr},{cy})"
+        days = f"INDEX({DATA}!$1:$1,1,{cy}+1)-$A$1"
+        r = len(raw) + first
+        raw.append(
+            [
+                f'=IF({name}="","",IFERROR({days},""))',
+                f'=IF({col_letter(RAW_COL)}{r}="","",'
+                f'IFERROR(({y_bid}/{spot_ask}-1)*365/{col_letter(RAW_COL)}{r},""))',
+                # A venue-prefixed name (CMX.*) is an overseas contract; a bare
+                # one is TFEX. Two venues is all this sheet carries today.
+                f'=IF({name}="","",IF(ISNUMBER(FIND(".",{name})),1,0))',
+            ]
+        )
+
+    front.update(
+        raw,
+        range_name=f"{col_letter(RAW_COL)}{first}:{col_letter(RAW_COL + 2)}{last}",
+        value_input_option="USER_ENTERED",
+    )
+
+    s, u, v = (col_letter(SORT_COL + i) for i in range(3))
+    # Sort by VENUE first, then by days. A series only draws a line across
+    # consecutive non-blank rows, so interleaving the two venues by days alone
+    # left every line in broken segments. Grouping by venue gives each series
+    # one unbroken run; the x-axis is numeric, so points still land on their
+    # own TTM regardless of row order.
+    front.update(
+        [
+            [
+                f"=SORT(FILTER({col_letter(RAW_COL)}{first}:{col_letter(RAW_COL + 2)}{last},"
+                f'{col_letter(RAW_COL)}{first}:{col_letter(RAW_COL)}{last}<>""),3,TRUE,1,TRUE)'
+            ]
+        ],
+        range_name=f"{s}{first}",
+        value_input_option="USER_ENTERED",
+    )
+
+    split = [
+        [
+            f'=IF({v}{r}="","",IF({v}{r}=1,{u}{r},""))',
+            f'=IF({v}{r}="","",IF({v}{r}=0,{u}{r},""))',
+        ]
+        for r in range(first, last + 1)
+    ]
+    front.update(
+        split,
+        range_name=f"{col_letter(SERIES_COL)}{first}:{col_letter(SERIES_COL + 1)}{last}",
+        value_input_option="USER_ENTERED",
+    )
+    front.update(
+        [["TTM", "", "", "COMEX", "TFEX"]],
+        range_name=f"{s}{CHART_ROW}:{col_letter(SERIES_COL + 1)}{CHART_ROW}",
+    )
+    # Set every column's format explicitly: front.clear() wipes values but not
+    # formats, so an inherited percent pattern turned 21 days into "2100.00%"
+    # and would have carried straight onto the chart's x-axis.
+    plain = {"numberFormat": {"type": "NUMBER", "pattern": "0"}}
+    pct = {"numberFormat": {"type": "NUMBER", "pattern": "0.00%"}}
+    for col, fmt in (
+        (col_letter(RAW_COL), plain),  # days
+        (col_letter(RAW_COL + 1), pct),  # yield
+        (col_letter(RAW_COL + 2), plain),  # venue flag
+        (s, plain),
+        (u, pct),
+        (v, plain),
+        (col_letter(SERIES_COL), pct),
+        (col_letter(SERIES_COL + 1), pct),
+    ):
+        front.format(f"{col}{first}:{col}{last}", fmt)
+
+
+def add_chart(front) -> None:
+    sid = front.id
+    first, last = CHART_ROW + 1, CHART_ROW + SPAN
+
+    def source(col_idx: int) -> dict:
+        return {
+            "sourceRange": {
+                "sources": [
+                    {
+                        "sheetId": sid,
+                        "startRowIndex": CHART_ROW - 1,
+                        "endRowIndex": last,
+                        "startColumnIndex": col_idx - 1,
+                        "endColumnIndex": col_idx,
+                    }
+                ]
+            }
+        }
+
+    meta = front.spreadsheet.fetch_sheet_metadata(
+        {"fields": "sheets(properties/sheetId,charts/chartId)"}
+    )
+    old = next(
+        (
+            [c["chartId"] for c in s.get("charts", [])]
+            for s in meta["sheets"]
+            if s["properties"]["sheetId"] == sid
+        ),
+        [],
+    )
+
+    spec = {
+        "title": "Implied carry curve",
+        "subtitle": "spot-referenced yield by time to expiry",
+        # The mirror and its scaffolding live in hidden columns; without this the
+        # chart would read them as absent and draw nothing.
+        "hiddenDimensionStrategy": "SHOW_ALL",
+        "basicChart": {
+            "chartType": "SCATTER",
+            "legendPosition": "BOTTOM_LEGEND",
+            "headerCount": 1,
+            "axis": [
+                {"position": "BOTTOM_AXIS", "title": "Days to expiry"},
+                {
+                    "position": "LEFT_AXIS",
+                    "title": "Implied carry",
+                    # Pinned rather than auto-fitted, for the same reason the
+                    # colour bands are: the curve's height has to mean the same
+                    # thing tomorrow. Left at the default the axis based itself
+                    # at 0 and squeezed a 3.7-5.6% spread into the top third.
+                    "viewWindowOptions": {
+                        "viewWindowMin": Y_AXIS[0],
+                        "viewWindowMax": Y_AXIS[1],
+                    },
+                },
+            ],
+            "domains": [{"domain": source(SORT_COL)}],
+            "series": [
+                {
+                    "series": source(SERIES_COL + i),
+                    "targetAxis": "LEFT_AXIS",
+                    "color": rgb(colour),
+                    "lineStyle": {"width": 2, "type": "SOLID"},
+                }
+                for i, colour in enumerate(VENUE_COLOURS)
+            ],
+        },
+    }
+
+    front.spreadsheet.batch_update(
+        {
+            "requests": [
+                *({"deleteEmbeddedObject": {"objectId": c}} for c in old),
+                {
+                    "addChart": {
+                        "chart": {
+                            "spec": spec,
+                            "position": {
+                                "overlayPosition": {
+                                    "anchorCell": {
+                                        "sheetId": sid,
+                                        "rowIndex": LAST_ROW + 1,
+                                        "columnIndex": 0,
+                                    },
+                                    "widthPixels": 760,
+                                    "heightPixels": 420,
+                                }
+                            },
+                        }
+                    }
+                },
+            ]
+        }
+    )
+    logger.info("Replaced %d chart(s) with the carry curve.", len(old))
+
+
 def build(front) -> None:
     front.clear()
 
@@ -175,6 +374,9 @@ def build(front) -> None:
         value_input_option="USER_ENTERED",
     )
     logger.info("Wrote a %dx%d triangle plus its numeric mirror.", SPAN, SPAN)
+
+    curve_block(front, cols)
+    logger.info("Wrote the term-structure chart data.")
 
 
 def style(front) -> None:
@@ -279,6 +481,7 @@ def main() -> int:
 
         build(front)
         style(front)
+        add_chart(front)
 
         logger.info("Front is ready.")
         return 0
