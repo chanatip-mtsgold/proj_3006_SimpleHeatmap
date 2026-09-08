@@ -38,30 +38,33 @@ FIRST_ROW = 2
 LAST_ROW = FIRST_ROW + SPAN - 1  # 12
 COLOUR_OFFSET = 14  # B -> P
 
-# Chart scaffolding, all inside the hidden columns below the mirror:
-#   P,Q,R  raw   days | yield | is-prefixed-venue, in Front's column order
-#   T      sorted spill of those three (T,U,V) - nothing may be written to U,V
-#   W,X    the sorted yield split into one column per venue
-CHART_ROW = 14  # header row; data runs CHART_ROW+1 .. CHART_ROW+SPAN
+# Chart scaffolding, in the hidden columns below the mirror. One row per pair
+# in the triangle, so no sorting is needed - these are points, not lines.
+#   P,Q,R  term (days) | yield | venue class
+#   S,T,U  that yield split into one column per class
+CHART_ROW = 14  # header row; data runs CHART_ROW+1 .. CHART_ROW+MAX_PAIRS
 RAW_COL = 16  # P
-SORT_COL = 20  # T
-SERIES_COL = 23  # W
+SERIES_COL = 19  # S
+MAX_PAIRS = SPAN * (SPAN + 1) // 2
 
-# Categorical slots 1 and 2 from the dataviz palette, in fixed order.
-VENUE_COLOURS = ["#2a78d6", "#eb6834"]
+# Categorical slots 1-3 from the dataviz palette, in fixed order. Class order
+# below must match: COMEX, TFEX, then pairs that straddle the two.
+VENUE_COLOURS = ["#2a78d6", "#eb6834", "#1baf7a"]
+VENUE_NAMES = ["COMEX", "TFEX", "cross-venue"]
 
-# Fixed y-axis so the curve is comparable day to day. Widen it if implied carry
+# Fixed y-axis so the cloud is comparable day to day. Widen it if implied carry
 # ever leaves this band - points outside are clipped, not rescaled.
-Y_AXIS = (0.02, 0.07)
+Y_AXIS = (0.0, 0.10)
 
 # Symbol names sit on odd columns of `Data` row 1; ranges are the same width so
 # FILTER lines them up. CA must exist as a real column (see simple_heatmap).
 SYMS = f"{DATA}!$C$1:$BZ$1"
 ALL_LEGS = f'FILTER({SYMS},ISODD(COLUMN({SYMS})),{SYMS}<>"")'
 
-# Diverging blue <-> red about zero: spreads go negative whenever the leg being
-# sold expires before the leg being bought. The red arm is luminance-matched to
-# the blue arm step for step, so neither side reads as the heavier one, and
+# Diverging blue <-> red on the YIELD, with a grey core rather than a single
+# neutral point: anything inside +/-4% is ordinary carry and should recede, the
+# ramp runs from there to its darkest at +/-8%. The red arm is luminance-matched
+# to the blue arm step for step, so neither side reads as the heavier one, and
 # every step keeps black text above 8:1.
 NEUTRAL = "#f0efec"
 
@@ -72,13 +75,13 @@ MIN_GAP = 7
 SUPPRESSED = "#dcdbd6"  # distinctly greyer than NEUTRAL so it is not read as zero
 
 BANDS = [
-    ("<=-60", "#ec8786"),
-    ("<=-20", "#f3b1b1"),
-    ("<0", "#f9d8d8"),
-    ("=0", NEUTRAL),
-    ("<20", "#cde2fb"),
-    ("<60", "#9ec5f4"),
-    (">=60", "#6da7ec"),
+    ("<=-0.08", "#ec8786"),
+    ("<=-0.06", "#f3b1b1"),
+    ("<-0.04", "#f9d8d8"),
+    ("<0.04", NEUTRAL),
+    ("<0.06", "#cde2fb"),
+    ("<0.08", "#9ec5f4"),
+    (">=0.08", "#6da7ec"),
 ]
 
 
@@ -136,105 +139,106 @@ def text_cell(row: int, col: str) -> str:
 
 
 def value_cell(row: int, col: str) -> str:
-    """The numeric mirror the conditional formatting reads.
+    """The numeric mirror: the yield, which is what the colour keys off.
 
     Left blank for a suppressed cell, which is what the grey rule keys off -
-    no third grid needed, and the sheet stays inside its 26 columns.
+    no third grid needed, and the sheet stays inside its 26 columns. The chart
+    block reads its y-values straight out of here rather than recomputing them.
     """
     p = parts(row, col)
-    live = f'IF(ABS({p["gap"]})<{MIN_GAP},"",{p["spread"]})'
+    live = f'IF(ABS({p["gap"]})<{MIN_GAP},"",{p["pct"]})'
     return f'=IF({p["guard"]},"",IFERROR({live},""))'
 
 
-def curve_block(front, cols: list[str]) -> None:
-    """Feed the term-structure chart: one point per contract, spot-referenced.
+def venue(name: str) -> str:
+    """1 for an exchange-prefixed contract, 0 for a bare TFEX one.
 
-    Yield here is the spot row's - a contract's own carry over its own life -
-    which is the only reading where a single TTM belongs on the x-axis.
+    Tested on the CMX. prefix rather than on the presence of a dot, because
+    the spot leg is XAUUSD.s and a dot test would file it as an exchange.
     """
-    dr = f"MATCH($A$1,{DATA}!$A:$A,0)"
+    return f'IF(LEFT({name},4)="CMX.",1,0)'
+
+
+def curve_block(front, cols: list[str]) -> None:
+    """Feed the scatter: every cell of the triangle, one row per pair.
+
+    x is the term the yield is actually earned over - the distance between the
+    two expiries - which is the only x that keeps a point self-consistent with
+    its own denominator. On the spot row that term is just the contract's TTM.
+
+    Points, not lines, so nothing here needs sorting.
+    """
     first = CHART_ROW + 1
-    last = CHART_ROW + SPAN
+    last = CHART_ROW + MAX_PAIRS
+    mirror = [col_letter(2 + COLOUR_OFFSET + j) for j in range(SPAN)]
 
     raw = []
-    for col in cols:
-        name = f"{col}$1"
-        cy = f"MATCH({name},{DATA}!$1:$1,0)"
-        spot_ask = f"INDEX({DATA}!$A:$CA,{dr},MATCH($A$2,{DATA}!$1:$1,0)+1)"
-        y_bid = f"INDEX({DATA}!$A:$CA,{dr},{cy})"
-        days = f"INDEX({DATA}!$1:$1,1,{cy}+1)-$A$1"
-        r = len(raw) + first
-        raw.append(
-            [
-                f'=IF({name}="","",IFERROR({days},""))',
-                f'=IF({col_letter(RAW_COL)}{r}="","",'
-                f'IFERROR(({y_bid}/{spot_ask}-1)*365/{col_letter(RAW_COL)}{r},""))',
-                # A venue-prefixed name (CMX.*) is an overseas contract; a bare
-                # one is TFEX. Two venues is all this sheet carries today.
-                f'=IF({name}="","",IF(ISNUMBER(FIND(".",{name})),1,0))',
-            ]
-        )
+    for i in range(1, SPAN + 1):
+        row = FIRST_ROW + i - 1
+        for j in range(i, SPAN + 1):
+            col = cols[j - 1]
+            p = parts(row, col)
+            x, y = f"$A{row}", f"{col}$1"
+            # Row 1 of the triangle is the spot leg, so a pair there simply
+            # takes the contract's venue; otherwise two venues that disagree
+            # make the pair cross-venue.
+            if i == 1:
+                cls = f'IF({y}="","",{venue(y)})'
+            else:
+                same = f"{venue(x)}={venue(y)}"
+                cls = f'IF(OR({x}="",{y}=""),"",IF({same},{venue(y)},2))'
+            raw.append(
+                [
+                    # ABS: a negative gap only means the column leg expires
+                    # first, which is an artefact of where a pair sits in the
+                    # triangle. The window's length is what belongs on the axis.
+                    f'=IF({p["guard"]},"",IFERROR(ABS({p["gap"]}),""))',
+                    # The mirror already holds this pair's yield, blanked when
+                    # the gap is too short - reuse it rather than recompute.
+                    f"={mirror[j - 1]}{row}",
+                    f"={cls}",
+                ]
+            )
 
     front.update(
         raw,
-        range_name=f"{col_letter(RAW_COL)}{first}:{col_letter(RAW_COL + 2)}{last}",
+        range_name=f"{col_letter(RAW_COL)}{first}:{col_letter(RAW_COL + 2)}{first + len(raw) - 1}",
         value_input_option="USER_ENTERED",
     )
 
-    s, u, v = (col_letter(SORT_COL + i) for i in range(3))
-    # Sort by VENUE first, then by days. A series only draws a line across
-    # consecutive non-blank rows, so interleaving the two venues by days alone
-    # left every line in broken segments. Grouping by venue gives each series
-    # one unbroken run; the x-axis is numeric, so points still land on their
-    # own TTM regardless of row order.
-    front.update(
-        [
-            [
-                f"=SORT(FILTER({col_letter(RAW_COL)}{first}:{col_letter(RAW_COL + 2)}{last},"
-                f'{col_letter(RAW_COL)}{first}:{col_letter(RAW_COL)}{last}<>""),3,TRUE,1,TRUE)'
-            ]
-        ],
-        range_name=f"{s}{first}",
-        value_input_option="USER_ENTERED",
-    )
-
+    q, r = col_letter(RAW_COL + 1), col_letter(RAW_COL + 2)
     split = [
-        [
-            f'=IF({v}{r}="","",IF({v}{r}=1,{u}{r},""))',
-            f'=IF({v}{r}="","",IF({v}{r}=0,{u}{r},""))',
-        ]
-        for r in range(first, last + 1)
+        [f'=IF({r}{n}={k},{q}{n},"")' for k in (1, 0, 2)] for n in range(first, last + 1)
     ]
     front.update(
         split,
-        range_name=f"{col_letter(SERIES_COL)}{first}:{col_letter(SERIES_COL + 1)}{last}",
+        range_name=f"{col_letter(SERIES_COL)}{first}:{col_letter(SERIES_COL + 2)}{last}",
         value_input_option="USER_ENTERED",
     )
     front.update(
-        [["TTM", "", "", "COMEX", "TFEX"]],
-        range_name=f"{s}{CHART_ROW}:{col_letter(SERIES_COL + 1)}{CHART_ROW}",
+        [["term", "yield", "class", *VENUE_NAMES]],
+        range_name=f"{col_letter(RAW_COL)}{CHART_ROW}:{col_letter(SERIES_COL + 2)}{CHART_ROW}",
     )
+
     # Set every column's format explicitly: front.clear() wipes values but not
     # formats, so an inherited percent pattern turned 21 days into "2100.00%"
     # and would have carried straight onto the chart's x-axis.
     plain = {"numberFormat": {"type": "NUMBER", "pattern": "0"}}
     pct = {"numberFormat": {"type": "NUMBER", "pattern": "0.00%"}}
-    for col, fmt in (
-        (col_letter(RAW_COL), plain),  # days
-        (col_letter(RAW_COL + 1), pct),  # yield
-        (col_letter(RAW_COL + 2), plain),  # venue flag
-        (s, plain),
-        (u, pct),
-        (v, plain),
-        (col_letter(SERIES_COL), pct),
-        (col_letter(SERIES_COL + 1), pct),
+    for offset, fmt in (
+        (RAW_COL, plain),
+        (RAW_COL + 1, pct),
+        (RAW_COL + 2, plain),
+        (SERIES_COL, pct),
+        (SERIES_COL + 1, pct),
+        (SERIES_COL + 2, pct),
     ):
-        front.format(f"{col}{first}:{col}{last}", fmt)
+        front.format(f"{col_letter(offset)}{first}:{col_letter(offset)}{last}", fmt)
 
 
 def add_chart(front) -> None:
     sid = front.id
-    first, last = CHART_ROW + 1, CHART_ROW + SPAN
+    last = CHART_ROW + MAX_PAIRS
 
     def source(col_idx: int) -> dict:
         return {
@@ -264,8 +268,8 @@ def add_chart(front) -> None:
     )
 
     spec = {
-        "title": "Implied carry curve",
-        "subtitle": "spot-referenced yield by time to expiry",
+        "title": "Implied carry",
+        "subtitle": "every pair in the matrix, yield against the term it is earned over",
         # The mirror and its scaffolding live in hidden columns; without this the
         # chart would read them as absent and draw nothing.
         "hiddenDimensionStrategy": "SHOW_ALL",
@@ -274,7 +278,7 @@ def add_chart(front) -> None:
             "legendPosition": "BOTTOM_LEGEND",
             "headerCount": 1,
             "axis": [
-                {"position": "BOTTOM_AXIS", "title": "Days to expiry"},
+                {"position": "BOTTOM_AXIS", "title": "Term (days between the two expiries)"},
                 {
                     "position": "LEFT_AXIS",
                     "title": "Implied carry",
@@ -288,13 +292,16 @@ def add_chart(front) -> None:
                     },
                 },
             ],
-            "domains": [{"domain": source(SORT_COL)}],
+            "domains": [{"domain": source(RAW_COL)}],
             "series": [
                 {
                     "series": source(SERIES_COL + i),
                     "targetAxis": "LEFT_AXIS",
                     "color": rgb(colour),
-                    "lineStyle": {"width": 2, "type": "SOLID"},
+                    # Points only. A line would have to interpolate between
+                    # pairs that share nothing but an axis.
+                    "lineStyle": {"width": 0, "type": "INVISIBLE"},
+                    "pointStyle": {"size": 7, "shape": "CIRCLE"},
                 }
                 for i, colour in enumerate(VENUE_COLOURS)
             ],
