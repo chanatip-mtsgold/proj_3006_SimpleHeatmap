@@ -10,14 +10,16 @@ them: flat neutral inside +/-GREY_BAND, fully saturated at +/-FULL_COLOUR.
 That matters because most pairs sit inside a single band on the sheet - here
 4.08% and 5.98% are visibly different.
 
-    uv run python dashboard.py
+    uv run python dashboard.py              # the last row logged at 10:00
+    uv run python dashboard.py --snapshot   # priced off the terminal right now
 """
 
+import argparse
 import sys
-import webbrowser
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import plotly.graph_objects as go
 
@@ -35,9 +37,11 @@ from setup_front import (
 )
 from simple_heatmap import (
     PROJECT_DIR,
+    fetch_live,
     get_worksheet,
     load_config,
     logger,
+    mt5_session,
     parse_header,
     setup_logger,
 )
@@ -130,10 +134,10 @@ def annualised(y_bid: float, x_ask: float, gap: int) -> float | None:
 
 def build_pairs(legs: list[Leg], when: date, quotes: dict[str, Quote]) -> list[Pair]:
     """Every leg against every later leg: sell Y, buy X."""
-    live = [leg for leg in legs if leg.name in quotes]
+    quoted = [leg for leg in legs if leg.name in quotes]
     out = []
-    for i, x in enumerate(live):
-        for y in live[i + 1 :]:
+    for i, x in enumerate(quoted):
+        for y in quoted[i + 1 :]:
             # Spot behaves as a leg expiring today, which is what makes the
             # spot row fall out of the same rule as every other pair.
             tx = x.ttm or when
@@ -194,6 +198,9 @@ STYLES = """
             color:#fff; margin-bottom:20px; }
   .header h1 { margin:0 0 4px; font-size:22px; }
   .header .meta { opacity:.85; font-size:14px; }
+  .snapshot { font-size:11px; letter-spacing:.08em; vertical-align:middle;
+              background:#e34948; padding:3px 8px; border-radius:10px;
+              margin-left:8px; }
   .header .formula { opacity:.85; font-size:13px; margin-top:8px; line-height:1.6;
                      font-family: ui-monospace, Consolas, monospace; }
   h2 { font-size:16px; margin:28px 0 10px; }
@@ -341,10 +348,17 @@ def history_chart(legs: list[Leg], history: list) -> go.Figure:
     return fig
 
 
-def render(legs: list[Leg], history: list) -> str:
-    when, quotes = history[-1]
-    pairs = build_pairs(legs, when, quotes)
+def render(legs: list[Leg], history: list, snap: tuple | None = None) -> str:
+    """`snap` is (timestamp, quotes) straight off the terminal; None uses the sheet."""
+    when, quotes = snap if snap else history[-1]
+    pairs = build_pairs(legs, when.date() if snap else when, quotes)
     spot = next((leg.name for leg in legs if leg.ttm is None), "spot")
+
+    # Both modes write the same filename and a snapshot goes stale within
+    # minutes, so the page has to say which one it is. The sheet mode says
+    # "logged" rather than "snapshot" so the two words cannot be confused.
+    badge = '<span class="snapshot">SNAPSHOT</span>' if snap else ""
+    stamp = f"{when:%Y-%m-%d %H:%M:%S}" if snap else f"Logged {when:%Y-%m-%d}"
 
     charts = [scatter(pairs), history_chart(legs, history)]
     panels = "".join(
@@ -365,8 +379,8 @@ def render(legs: list[Leg], history: list) -> str:
 <body>
 <div class="wrap">
   <div class="header">
-    <h1>Gold carry &mdash; pairwise matrix</h1>
-    <div class="meta">Snapshot {when:%Y-%m-%d} &middot; spot leg {spot}
+    <h1>Gold carry &mdash; pairwise matrix {badge}</h1>
+    <div class="meta">{stamp} &middot; spot leg {spot}
       &middot; {len(legs)} legs, {len(pairs)} pairs</div>
     <div class="formula">
       spread = Y<sub>bid</sub> &minus; X<sub>ask</sub> &nbsp;(sell Y, buy X)<br>
@@ -388,15 +402,36 @@ def render(legs: list[Leg], history: list) -> str:
 """
 
 
+def take_snapshot(cfg: dict, legs: list[Leg]) -> tuple:
+    """One read of the terminal's current ticks, stamped with the local time."""
+    names = [leg.name for leg in legs]
+    with mt5_session(cfg["mt5_path"]):
+        ticks = fetch_live(names)
+    if not ticks:
+        raise RuntimeError("MT5 returned no quotes at all.")
+
+    logger.info("Live quotes for %d/%d legs.", len(ticks), len(names))
+    tz = ZoneInfo(cfg.get("timezone", "Asia/Bangkok"))
+    return datetime.now(tz), {n: Quote(bid, ask) for n, (bid, ask, _) in ticks.items()}
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Render dashboard.html.")
+    parser.add_argument(
+        "--snapshot",
+        action="store_true",
+        help="Price the matrix off the terminal's ticks as of now, instead of "
+        "the last row logged at 10:00. One render. Needs MT5 running.",
+    )
+    args = parser.parse_args()
+
     cfg = load_config()
     setup_logger(cfg["log_file"])
     try:
         legs, history = read_sheet(cfg)
-        OUT.write_text(render(legs, history), encoding="utf-8")
+        snap = take_snapshot(cfg, legs) if args.snapshot else None
+        OUT.write_text(render(legs, history, snap), encoding="utf-8")
         logger.info("Wrote %s (%.0f KB).", OUT, OUT.stat().st_size / 1024)
-        if "--open" in sys.argv:
-            webbrowser.open(OUT.as_uri())
         return 0
     except Exception:
         logger.exception("Dashboard failed.")

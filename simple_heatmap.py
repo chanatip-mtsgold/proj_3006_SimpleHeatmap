@@ -234,6 +234,31 @@ def fetch_quotes(symbols: list[str], target_utc: datetime, lookback_minutes: int
     return quotes
 
 
+def fetch_live(symbols: list[str]) -> dict:
+    """Whatever the terminal is showing right now, for the live dashboard.
+
+    Call inside an open `mt5_session`. Unlike fetch_quotes this reads the
+    current tick rather than history, so there is no window and nothing to
+    annualise against - the caller supplies the timestamp. Same return shape:
+    {symbol: (bid, ask, tick_utc)}, absent when there is no usable tick.
+    """
+    quotes: dict[str, tuple[float, float, datetime]] = {}
+    for sym in symbols:
+        if not mt5.symbol_select(sym, True):
+            logger.warning("symbol_select('%s') failed: %s", sym, mt5.last_error())
+            continue
+        tick = mt5.symbol_info_tick(sym)
+        if tick is None or tick.bid <= 0 or tick.ask <= 0:
+            logger.warning("No live tick for '%s'.", sym)
+            continue
+        quotes[sym] = (
+            float(tick.bid),
+            float(tick.ask),
+            datetime.fromtimestamp(tick.time, tz=timezone.utc),
+        )
+    return quotes
+
+
 # --------------------------------------------------------------------------- #
 # Which days still need a row
 # --------------------------------------------------------------------------- #
