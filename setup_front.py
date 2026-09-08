@@ -48,6 +48,13 @@ ALL_LEGS = f'FILTER({SYMS},ISODD(COLUMN({SYMS})),{SYMS}<>"")'
 # the blue arm step for step, so neither side reads as the heavier one, and
 # every step keeps black text above 8:1.
 NEUTRAL = "#f0efec"
+
+# Below this many days between the two expiries the annualised yield stops
+# meaning anything: dividing by a one-day gap turned a $3.80 venue difference
+# between GCV6 and GOU26 into -32%/yr. Those cells drop the yield and go grey.
+MIN_GAP = 7
+SUPPRESSED = "#dcdbd6"  # distinctly greyer than NEUTRAL so it is not read as zero
+
 BANDS = [
     ("<=-60", "#ec8786"),
     ("<=-20", "#f3b1b1"),
@@ -85,27 +92,42 @@ def parts(row: int, col: str) -> dict:
     x_ask = f"INDEX({DATA}!$A:$CA,{dr},{cx}+1)"
     y_bid = f"INDEX({DATA}!$A:$CA,{dr},{cy})"
     dy = f"({ty}-$A$1)"
+    # The carry window the yield is earned over is the distance between the two
+    # expiries, not the time left on either leg. Spot behaves as a leg expiring
+    # on the snapshot date, which makes the spot row fall out of the same rule.
+    gap = f'IF({tx}="",{dy},{ty}-{tx})'
+    # Never divide by a gap we are going to suppress anyway - a pair of
+    # contracts sharing an expiry would otherwise raise #DIV/0! and take the
+    # spread down with it.
+    safe_gap = f"IF(ABS({gap})>={MIN_GAP},{gap},1)"
     return {
         "guard": f'OR({x}="",{y}="")',
         "tx": tx,
+        "gap": gap,
         "spread": f"({y_bid}-{x_ask})",
-        # Spot has no TTM, so for the spot row the near leg is simply Y.
+        # Days shown is the NEAR leg's time left - that is what forces the
+        # position to be unwound - which is not the yield's denominator.
         "days": f'IF({tx}="",{dy},MIN({tx}-$A$1,{dy}))',
-        "pct": f"(({y_bid}/{x_ask})-1)*365/{dy}",
+        "pct": f"(({y_bid}/{x_ask})-1)*365/{safe_gap}",
     }
 
 
 def text_cell(row: int, col: str) -> str:
     p = parts(row, col)
-    pct = f'IF({p["tx"]}="",TEXT({p["pct"]},"0.00%")&" ","")'
+    pct = f'IF(ABS({p["gap"]})>={MIN_GAP},TEXT({p["pct"]},"0.00%")&" ","")'
     body = f'{pct}&"("&TEXT({p["spread"]},"+0.00;-0.00")&") ("&{p["days"]}&"d)"'
     return f'=IF({p["guard"]},"",IFERROR({body},""))'
 
 
 def value_cell(row: int, col: str) -> str:
-    """The numeric mirror the conditional formatting reads."""
+    """The numeric mirror the conditional formatting reads.
+
+    Left blank for a suppressed cell, which is what the grey rule keys off -
+    no third grid needed, and the sheet stays inside its 26 columns.
+    """
     p = parts(row, col)
-    return f'=IF({p["guard"]},"",IFERROR({p["spread"]},""))'
+    live = f'IF(ABS({p["gap"]})<{MIN_GAP},"",{p["spread"]})'
+    return f'=IF({p["guard"]},"",IFERROR({live},""))'
 
 
 def build(front) -> None:
@@ -188,11 +210,21 @@ def style(front) -> None:
     }
     mirror_ref = f"{col_letter(2 + COLOUR_OFFSET)}{FIRST_ROW}"
 
-    rules = []
-    for i, (test, colour) in enumerate(BANDS):
+    visible_ref = f"B{FIRST_ROW}"
+    # A written cell whose mirror is blank is a suppressed one; a cell that is
+    # blank on both sides is just outside the triangle and stays unpainted.
+    tests = [
+        (f"=AND(NOT(ISNUMBER({mirror_ref})),{visible_ref}<>\"\")", SUPPRESSED),
         # ISNUMBER matters: a blank mirror cell holds "", and in Sheets text
         # compares as greater than any number, so ">=60" would match it.
-        formula = f"=AND(ISNUMBER({mirror_ref}),{mirror_ref}{test})"
+        *(
+            (f"=AND(ISNUMBER({mirror_ref}),{mirror_ref}{test})", colour)
+            for test, colour in BANDS
+        ),
+    ]
+
+    rules = []
+    for i, (formula, colour) in enumerate(tests):
         rules.append(
             {
                 "addConditionalFormatRule": {
@@ -234,7 +266,7 @@ def style(front) -> None:
             ]
         }
     )
-    logger.info("Applied %d diverging bands and hid the mirror.", len(BANDS))
+    logger.info("Applied %d colour rules and hid the mirror.", len(tests))
 
 
 def main() -> int:
