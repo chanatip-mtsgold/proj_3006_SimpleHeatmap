@@ -47,9 +47,21 @@ RAW_COL = 16  # P
 SERIES_COL = 19  # S
 MAX_PAIRS = SPAN * (SPAN + 1) // 2
 
-# Categorical slots 1-3 from the dataviz palette, in fixed order. Class order
-# below must match: COMEX, TFEX, then pairs that straddle the two.
-VENUE_COLOURS = ["#2a78d6", "#eb6834", "#1baf7a"]
+# The dataviz categorical palette. Slots are assigned in this fixed order and
+# never cycled - a series keeps its hue when the set around it changes.
+CATEGORICAL = [
+    "#2a78d6",  # blue
+    "#eb6834",  # orange
+    "#1baf7a",  # aqua
+    "#eda100",  # yellow
+    "#e87ba4",  # magenta
+    "#008300",  # green
+    "#4a3aa7",  # violet
+    "#e34948",  # red
+]
+
+# Class order must match: COMEX, TFEX, then pairs that straddle the two.
+VENUE_COLOURS = CATEGORICAL[:3]
 VENUE_NAMES = ["COMEX", "TFEX", "cross-venue"]
 
 # Fixed y-axis so the cloud is comparable day to day. Widen it if implied carry
@@ -74,14 +86,22 @@ NEUTRAL = "#f0efec"
 MIN_GAP = 7
 SUPPRESSED = "#dcdbd6"  # distinctly greyer than NEUTRAL so it is not read as zero
 
+GREY_BAND = 0.04  # |yield| below this is ordinary carry and stays neutral
+FULL_COLOUR = 0.08  # and at this it is fully saturated
+
+# Ramp anchors, palest first. Sheets can only step between them; dashboard.py
+# interpolates across them for a continuous scale. Same endpoints either way.
+RAMP_UP = [NEUTRAL, "#cde2fb", "#9ec5f4", "#6da7ec"]
+RAMP_DOWN = [NEUTRAL, "#f9d8d8", "#f3b1b1", "#ec8786"]
+
 BANDS = [
-    ("<=-0.08", "#ec8786"),
-    ("<=-0.06", "#f3b1b1"),
-    ("<-0.04", "#f9d8d8"),
+    ("<=-0.08", RAMP_DOWN[3]),
+    ("<=-0.06", RAMP_DOWN[2]),
+    ("<-0.04", RAMP_DOWN[1]),
     ("<0.04", NEUTRAL),
-    ("<0.06", "#cde2fb"),
-    ("<0.08", "#9ec5f4"),
-    (">=0.08", "#6da7ec"),
+    ("<0.06", RAMP_UP[1]),
+    ("<0.08", RAMP_UP[2]),
+    (">=0.08", RAMP_UP[3]),
 ]
 
 

@@ -118,33 +118,39 @@ def get_worksheet(cfg: dict):
 META_HEADERS = {"DATE", "TIME", "TIMESTAMP", "DATETIME"}
 
 
-def read_layout(ws) -> tuple[list[str], list[tuple[str, int]]]:
-    """Parse the two header rows.
+def parse_header(row1: list[str]) -> tuple[list[str], list[tuple[str, int, str]]]:
+    """The one place that knows how `Data` row 1 is laid out.
 
-    Leading columns whose row-1 name is a meta header (Date / Time / Timestamp)
-    are the timestamp block; every other non-empty row-1 cell starts a symbol
-    that owns that column (BID) and the next one (ASK).
+    Leading columns whose name is a meta header (Date / Time / Timestamp) are
+    the timestamp block; every other non-empty cell starts a symbol that owns
+    that column (BID) and the next one (ASK), with its TTM sitting in that
+    second column of row 1. A symbol with no TTM is the spot leg.
 
-    Returns (meta_headers_upper, [(symbol, bid_col)]) with 1-based columns.
+    Returns (meta_headers_upper, [(symbol, bid_col, ttm)]), columns 1-based.
     """
-    row1 = ws.row_values(1)
-
     meta: list[str] = []
     col = 1
     while col <= len(row1) and row1[col - 1].strip().upper() in META_HEADERS:
         meta.append(row1[col - 1].strip().upper())
         col += 1
 
-    layout: list[tuple[str, int]] = []
+    legs: list[tuple[str, int, str]] = []
     while col <= len(row1):
         name = row1[col - 1].strip()
         if name:
-            layout.append((name, col))
+            ttm = row1[col].strip() if col < len(row1) else ""
+            legs.append((name, col, ttm))
             col += 2  # this symbol owns the BID and ASK columns
         else:
             col += 1
 
-    return meta, layout
+    return meta, legs
+
+
+def read_layout(ws) -> tuple[list[str], list[tuple[str, int]]]:
+    """(meta_headers, [(symbol, bid_col)]) — the daily job does not need TTMs."""
+    meta, legs = parse_header(ws.row_values(1))
+    return meta, [(name, col) for name, col, _ in legs]
 
 
 def ensure_header_row2(ws, layout: list[tuple[str, int]]) -> None:

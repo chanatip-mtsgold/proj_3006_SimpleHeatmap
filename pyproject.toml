@@ -10,4 +10,5 @@ dependencies = [
     "google-auth>=2.34",
     "google-auth-oauthlib>=1.2",
     "tzdata>=2024.1",
+    "plotly>=5.24",
 ]
