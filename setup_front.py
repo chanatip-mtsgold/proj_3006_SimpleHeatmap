@@ -49,12 +49,19 @@ MAX_PAIRS = SPAN * (SPAN + 1) // 2
 
 # The dataviz categorical palette. Slots are assigned in this fixed order and
 # never cycled - a series keeps its hue when the set around it changes.
+#
+# Aqua, yellow and magenta are the palette's darker steps rather than its
+# default ones: at the default the three sat at 2.11-2.74 against a white page,
+# which a 2px line cannot survive. Validated as a set on the light surface -
+# all 8 clear 3:1, worst adjacent CVD dE 8.4. Re-run before changing any of
+# them:
+#   node scripts/validate_palette.js "<hex,...>" --mode light
 CATEGORICAL = [
     "#2a78d6",  # blue
     "#eb6834",  # orange
-    "#1baf7a",  # aqua
-    "#eda100",  # yellow
-    "#e87ba4",  # magenta
+    "#199e70",  # aqua
+    "#b07400",  # yellow
+    "#d55181",  # magenta
     "#008300",  # green
     "#4a3aa7",  # violet
     "#e34948",  # red

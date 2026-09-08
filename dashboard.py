@@ -44,6 +44,7 @@ from simple_heatmap import (
 
 OUT = Path(PROJECT_DIR) / "dashboard.html"
 FIRST_DATA_ROW = 3
+HISTORY_DAYS = 30  # most recent snapshots shown on the history chart
 
 
 # --------------------------------------------------------------------------- #
@@ -293,6 +294,9 @@ def scatter(pairs: list[Pair]) -> go.Figure:
 
 
 def history_chart(legs: list[Leg], history: list) -> go.Figure:
+    # Only the tail: `Data` keeps growing, and a year of daily points would
+    # squash the recent moves that anyone is actually reading the chart for.
+    history = history[-HISTORY_DAYS:]
     spot = next((leg for leg in legs if leg.ttm is None), None)
     fig = go.Figure()
     if spot is None:
@@ -327,7 +331,7 @@ def history_chart(legs: list[Leg], history: list) -> go.Figure:
             )
 
     fig.update_layout(
-        title=f"Spot-referenced yield since logging began ({len(history)} days)",
+        title=f"Spot-referenced yield — last {len(history)} snapshots",
         xaxis_title="Snapshot date",
         yaxis_title="Yield (%/yr)",
         template="plotly_white",
@@ -335,42 +339,6 @@ def history_chart(legs: list[Leg], history: list) -> go.Figure:
         legend={"orientation": "h", "y": -0.2},
     )
     return fig
-
-
-def render_history_table(legs: list[Leg], history: list) -> str:
-    """The history chart's numbers, in full.
-
-    Not decoration: three of the six line colours sit under 3:1 against the
-    page, which the palette validator flags as needing a table view or direct
-    labels to fall back on. It is also simply what anyone wants to read off.
-    """
-    spot = next((leg for leg in legs if leg.ttm is None), None)
-    contracts = [leg for leg in legs if leg.ttm is not None]
-    if spot is None or not contracts:
-        return ""
-
-    head = "".join(f"<th>{leg.name}</th>" for leg in contracts)
-    body = []
-    for when, quotes in history:
-        cells = []
-        for leg in contracts:
-            y = (
-                annualised(quotes[leg.name].bid, quotes[spot.name].ask, (leg.ttm - when).days)
-                if leg.name in quotes and spot.name in quotes
-                else None
-            )
-            cells.append(
-                "<td></td>"
-                if y is None
-                else f'<td style="background:{shade(y)}">{y * 100:.2f}%</td>'
-            )
-        body.append(f'<tr><th class="row">{when:%Y-%m-%d}</th>{"".join(cells)}</tr>')
-
-    return f"""<h2>Spot-referenced yield, by day</h2>
-<div class="card scroll">
-<table><thead><tr><th></th>{head}</tr></thead>
-<tbody>{"".join(body)}</tbody></table>
-</div>"""
 
 
 def render(legs: list[Leg], history: list) -> str:
@@ -413,8 +381,6 @@ def render(legs: list[Leg], history: list) -> str:
 
   <h2>Charts</h2>
   <div class="charts">{panels}</div>
-
-  {render_history_table(legs, history)}
 </div>
 <script>{RESIZE}</script>
 </body>
