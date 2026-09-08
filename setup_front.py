@@ -147,7 +147,12 @@ def parts(row: int, col: str) -> dict:
     # spread down with it.
     safe_gap = f"IF(ABS({gap})>={MIN_GAP},{gap},1)"
     return {
-        "guard": f'OR({x}="",{y}="")',
+        # A leg MT5 was not quoting leaves its cells empty, and Sheets reads an
+        # empty cell as 0 rather than as an error - so IFERROR never sees it and
+        # (0/ask - 1) came out as -1825%/yr, painted the darkest red as though
+        # it were an enormous arbitrage. Prices are always positive when they
+        # are there, so requiring that is the test.
+        "guard": f'OR({x}="",{y}="",{y_bid}<=0,{x_ask}<=0)',
         "tx": tx,
         "gap": gap,
         "spread": f"({y_bid}-{x_ask})",
