@@ -147,12 +147,18 @@ def parts(row: int, col: str) -> dict:
     # spread down with it.
     safe_gap = f"IF(ABS({gap})>={MIN_GAP},{gap},1)"
     return {
+        # Two guards, applied as nested IFs rather than one OR. OR evaluates
+        # every argument, so folding the price checks in with the name checks
+        # ran MATCH("") on the unused columns past the last leg and filled them
+        # with #N/A - IFERROR wraps the body, not the guard. IF short-circuits,
+        # so testing the names first keeps the lookups from ever running.
+        "unnamed": f'OR({x}="",{y}="")',
         # A leg MT5 was not quoting leaves its cells empty, and Sheets reads an
         # empty cell as 0 rather than as an error - so IFERROR never sees it and
         # (0/ask - 1) came out as -1825%/yr, painted the darkest red as though
         # it were an enormous arbitrage. Prices are always positive when they
         # are there, so requiring that is the test.
-        "guard": f'OR({x}="",{y}="",{y_bid}<=0,{x_ask}<=0)',
+        "unpriced": f"OR({y_bid}<=0,{x_ask}<=0)",
         "tx": tx,
         "gap": gap,
         "spread": f"({y_bid}-{x_ask})",
@@ -167,7 +173,10 @@ def text_cell(row: int, col: str) -> str:
     p = parts(row, col)
     pct = f'IF(ABS({p["gap"]})>={MIN_GAP},TEXT({p["pct"]},"0.00%")&" ","")'
     body = f'{pct}&"("&TEXT({p["spread"]},"+0.00;-0.00")&") ("&{p["days"]}&"d)"'
-    return f'=IF({p["guard"]},"",IFERROR({body},""))'
+    return (
+        f'=IF({p["unnamed"]},"",'
+        f'IF({p["unpriced"]},"",IFERROR({body},"")))'
+    )
 
 
 def value_cell(row: int, col: str) -> str:
@@ -179,7 +188,10 @@ def value_cell(row: int, col: str) -> str:
     """
     p = parts(row, col)
     live = f'IF(ABS({p["gap"]})<{MIN_GAP},"",{p["pct"]})'
-    return f'=IF({p["guard"]},"",IFERROR({live},""))'
+    return (
+        f'=IF({p["unnamed"]},"",'
+        f'IF({p["unpriced"]},"",IFERROR({live},"")))'
+    )
 
 
 def venue(name: str) -> str:
@@ -224,7 +236,7 @@ def curve_block(front, cols: list[str]) -> None:
                     # ABS: a negative gap only means the column leg expires
                     # first, which is an artefact of where a pair sits in the
                     # triangle. The window's length is what belongs on the axis.
-                    f'=IF({p["guard"]},"",IFERROR(ABS({p["gap"]}),""))',
+                    f'=IF({p["unnamed"]},"",IFERROR(ABS({p["gap"]}),""))',
                     # The mirror already holds this pair's yield, blanked when
                     # the gap is too short - reuse it rather than recompute.
                     f"={mirror[j - 1]}{row}",
