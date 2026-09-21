@@ -258,6 +258,23 @@ schtasks /create /xml SimpleHeatmap_task.xml /tn SimpleHeatmap
 schtasks /run /tn SimpleHeatmap
 ```
 
+### ไม่มีหน้าต่างเด้ง
+
+task เรียก `.venv\Scripts\pythonw.exe` ตรง ๆ **ไม่ผ่าน `SimpleHeatmap.bat`** เพราะ .bat
+เปิดหน้าต่าง cmd เสมอ และ `uv run` ก็เปิด console ของตัวเองซ้อนอีกชั้น ยิงเข้าตัว
+interpreter เลยเป็นทางเดียวที่ไม่มีอะไรโผล่
+
+ผลที่ตามมาสองข้อ
+
+- **lockfile ไม่ถูกตรวจตอนรัน** (เสีย `uv run --frozen` ไป) ถ้าแก้ dependency
+  ต้องรัน `uv sync` เอง
+- **`sys.stdout` กับ `sys.stderr` เป็น `None`** ใต้ Task Scheduler — ตรวจแล้วเป็นทั้งคู่
+  `setup_logger` จึงเพิ่ม console handler เฉพาะตอนมี stdout ถ้าไม่กันไว้
+  `StreamHandler(None)` จะ fallback ไป stderr ที่ก็ `None` แล้ว log บรรทัดแรกโยน
+  `AttributeError` ทันที — job ตายก่อนทำอะไรเลย
+
+`SimpleHeatmap.bat` ยังอยู่สำหรับรันมือ ซึ่งเป็นกรณีที่อยากเห็น output อยู่แล้ว
+
 ## Config
 
 `config.json` — `spreadsheet_id`, `sheet_name` (เว้นว่าง = ใช้ชีตแรก), `log_file`,

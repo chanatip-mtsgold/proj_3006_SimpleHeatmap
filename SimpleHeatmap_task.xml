@@ -46,8 +46,14 @@
     <Priority>7</Priority>
   </Settings>
   <Actions Context="Author">
+    <!-- pythonw from the venv, not the .bat: a .bat always flashes a cmd
+         window and "uv run" opens its own console on top of that. Going
+         straight to the interpreter is the only way nothing appears at all.
+         The cost is that the lockfile is no longer checked on each run, so
+         run "uv sync" yourself after changing dependencies. -->
     <Exec>
-      <Command>C:\Users\p.alpha\Documents\Github\proj_3006_SimpleHeatmap\SimpleHeatmap.bat</Command>
+      <Command>C:\Users\p.alpha\Documents\Github\proj_3006_SimpleHeatmap\.venv\Scripts\pythonw.exe</Command>
+      <Arguments>simple_heatmap.py</Arguments>
       <WorkingDirectory>C:\Users\p.alpha\Documents\Github\proj_3006_SimpleHeatmap</WorkingDirectory>
     </Exec>
   </Actions>

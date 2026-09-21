@@ -1,9 +1,13 @@
 @echo OFF
 
 :: ============================================================================
-:: proj_3006 — SimpleHeatmap launcher (uv)
-:: Register this .bat in Windows Task Scheduler.
-:: Cadence: ONCE DAILY, weekdays, 10:00 Thai time (= 03:00 GMT on the MT5 feed).
+:: proj_3006 — SimpleHeatmap, manual run.
+::
+:: The scheduled task does NOT use this file. A .bat always flashes a cmd
+:: window and `uv run` opens its own console on top, so the task calls
+:: .venv\Scripts\pythonw.exe directly instead - see SimpleHeatmap_task.xml.
+:: This is here for running it by hand, where seeing the output is the point.
+::
 :: Requires the MT5 terminal to be already running and logged in.
 :: ============================================================================
 

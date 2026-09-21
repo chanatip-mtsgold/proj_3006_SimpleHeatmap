@@ -60,9 +60,14 @@ def setup_logger(log_file: str) -> None:
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt)
-    logger.addHandler(sh)
+    # Under pythonw there is no console, so sys.stdout is None - and a bare
+    # StreamHandler would fall back to sys.stderr, which is None too, and throw
+    # on the first log line. The file handler is the one that matters for a
+    # scheduled run; the console one is for when someone is watching.
+    if sys.stdout is not None:
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(fmt)
+        logger.addHandler(sh)
 
 
 def load_config() -> dict:
