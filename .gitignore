@@ -5,3 +5,4 @@ __pycache__/
 *.env
 dashboard.html
 backfill_cache.json
+front.png
