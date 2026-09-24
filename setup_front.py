@@ -86,10 +86,10 @@ ALL_LEGS = f'FILTER({SYMS},ISODD(COLUMN({SYMS})),{SYMS}<>"")'
 LAST_ROW_EXPR = f"COUNTA({DATA}!$A$3:$A)+2"
 
 # Diverging blue <-> red on the YIELD, with a grey core rather than a single
-# neutral point: anything inside +/-4% is ordinary carry and should recede, the
-# ramp runs from there to its darkest at +/-8%. The red arm is luminance-matched
-# to the blue arm step for step, so neither side reads as the heavier one, and
-# every step keeps black text above 8:1.
+# neutral point: anything inside +/-2% is barely carry at all and should
+# recede, the ramp runs from there to its darkest at +/-7%. The red arm is
+# luminance-matched to the blue arm step for step, so neither side reads as the
+# heavier one, and every step keeps black text above 6.9:1.
 NEUTRAL = "#f0efec"
 
 # Below this many days between the two expiries the annualised yield stops
@@ -98,23 +98,46 @@ NEUTRAL = "#f0efec"
 MIN_GAP = 7
 SUPPRESSED = "#dcdbd6"  # distinctly greyer than NEUTRAL so it is not read as zero
 
-GREY_BAND = 0.04  # |yield| below this is ordinary carry and stays neutral
-FULL_COLOUR = 0.08  # and at this it is fully saturated
+# The band was +/-4% to +/-8% until the history showed where the yields
+# actually sit: COMEX near 4.35% and TFEX near 5.40%, so the whole table fell
+# in the palest half of the ramp and everything below 4% - including a 2% and a
+# 4% pair - collapsed into the same flat grey. Anchoring to 2%..7% spreads the
+# live range across the full ramp. Values past 7% clip rather than rescale, so
+# the colours mean the same thing from one day to the next.
+GREY_BAND = 0.02  # |yield| below this is barely carry and stays neutral
+FULL_COLOUR = 0.07  # and at this it is fully saturated
 
 # Ramp anchors, palest first. Sheets can only step between them; dashboard.py
 # interpolates across them for a continuous scale. Same endpoints either way.
-RAMP_UP = [NEUTRAL, "#cde2fb", "#9ec5f4", "#6da7ec"]
-RAMP_DOWN = [NEUTRAL, "#f9d8d8", "#f3b1b1", "#ec8786"]
+# The intermediate steps are sRGB midpoints of the three validated anchors, so
+# both arms stay luminance-matched (worst mismatch 1.2%) without introducing
+# hues that have not been checked.
+RAMP_UP = [NEUTRAL, "#dee8f4", "#cde2fb", "#b6d4f8", "#9ec5f4", "#86b6f0", "#6da7ec"]
+RAMP_DOWN = [NEUTRAL, "#f4e4e2", "#f9d8d8", "#f6c4c4", "#f3b1b1", "#f09c9c", "#ec8786"]
 
-BANDS = [
-    ("<=-0.08", RAMP_DOWN[3]),
-    ("<=-0.06", RAMP_DOWN[2]),
-    ("<-0.04", RAMP_DOWN[1]),
-    ("<0.04", NEUTRAL),
-    ("<0.06", RAMP_UP[1]),
-    ("<0.08", RAMP_UP[2]),
-    (">=0.08", RAMP_UP[3]),
-]
+# One shade per percentage point of yield: with six colours over 2%..7% the
+# edges land on whole numbers, which is what makes the legend explainable.
+# Derived rather than written out so the two can never drift apart.
+BAND_STEP = (FULL_COLOUR - GREY_BAND) / (len(RAMP_UP) - 2)
+
+
+def _bands() -> list[tuple[str, str]]:
+    """Cascading tests, most negative first - Sheets takes the first match."""
+    # Interior edges only: GREY_BAND closes the neutral core and FULL_COLOUR
+    # opens the saturated tail, so neither belongs in this list.
+    inner = [GREY_BAND + i * BAND_STEP for i in range(1, len(RAMP_UP) - 2)]
+
+    out = [(f"<=-{FULL_COLOUR:g}", RAMP_DOWN[-1])]
+    out += [(f"<=-{e:g}", RAMP_DOWN[i]) for i, e in reversed(list(enumerate(inner, 2)))]
+    out.append((f"<-{GREY_BAND:g}", RAMP_DOWN[1]))
+    out.append((f"<{GREY_BAND:g}", NEUTRAL))
+    out += [(f"<{e:g}", RAMP_UP[i]) for i, e in enumerate(inner, 1)]
+    out.append((f"<{FULL_COLOUR:g}", RAMP_UP[-2]))
+    out.append((f">={FULL_COLOUR:g}", RAMP_UP[-1]))
+    return out
+
+
+BANDS = _bands()
 
 
 def col_letter(idx: int) -> str:
