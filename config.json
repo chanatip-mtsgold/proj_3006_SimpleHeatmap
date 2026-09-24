@@ -2,7 +2,10 @@
   "spreadsheet_id": "1MmAn7aVFIdReaMZgxoN-thw-LMtBFna4B5qCKI8kNpU",
   "sheet_name": "Data",
   "log_file": "simple_heatmap.log",
-  "snapshot_time": "10:00",
+  "snapshot_times": [
+    "10:00",
+    "21:00"
+  ],
   "lookback_minutes": 3,
   "max_backfill_days": 10,
   "timezone": "Asia/Bangkok"

@@ -267,54 +267,71 @@ def fetch_live(symbols: list[str]) -> dict:
 # --------------------------------------------------------------------------- #
 # Which days still need a row
 # --------------------------------------------------------------------------- #
-def snapshot_times(cfg: dict, day: date) -> tuple[datetime, datetime]:
-    """Return (local, utc) datetimes for the configured snapshot time on `day`."""
+def clock_times(cfg: dict) -> list[dtime]:
+    """The times of day to snapshot, earliest first."""
+    raw = cfg.get("snapshot_times") or [cfg.get("snapshot_time", "10:00")]
+    return sorted(dtime(*(int(p) for p in t.split(":"))) for t in raw)
+
+
+def snapshot_times(cfg: dict, day: date, at: dtime) -> tuple[datetime, datetime]:
+    """Return (local, utc) datetimes for one snapshot slot."""
     tz = ZoneInfo(cfg.get("timezone", "Asia/Bangkok"))
-    hh, mm = (int(p) for p in cfg.get("snapshot_time", "10:00").split(":"))
-    local = datetime.combine(day, dtime(hh, mm), tzinfo=tz)
+    local = datetime.combine(day, at, tzinfo=tz)
     return local, local.astimezone(timezone.utc)
 
 
-def existing_dates(ws) -> set[str]:
-    """Dates already logged, read from column A below the two header rows."""
-    return {v.strip() for v in ws.col_values(1)[FIRST_DATA_ROW - 1 :] if v.strip()}
+def existing_slots(ws) -> set[tuple[str, str]]:
+    """(date, HH:MM) already logged, from the Date and Time columns.
+
+    Keyed on the pair, not the date: with more than one snapshot a day, a date
+    alone would make the second slot look like a duplicate of the first.
+    """
+    dates = ws.col_values(1)[FIRST_DATA_ROW - 1 :]
+    times = ws.col_values(2)[FIRST_DATA_ROW - 1 :]
+    times += [""] * (len(dates) - len(times))
+    return {(d.strip(), t.strip()[:5]) for d, t in zip(dates, times) if d.strip()}
 
 
-def pending_days(cfg: dict, ws, date_arg: str | None) -> list[date]:
-    """Weekdays whose snapshot time has passed but that have no row yet.
+def pending_slots(cfg: dict, ws, date_arg: str | None) -> list[tuple[date, dtime]]:
+    """Slots whose time has passed but that have no row yet.
 
-    A skipped day (PC off, task disabled, MT5 down) is picked up by the next
-    successful run instead of being lost, and re-running never duplicates a
-    date that is already in the sheet.
+    A skipped slot (PC off, task disabled, MT5 down) is picked up by the next
+    successful run instead of being lost, and re-running never duplicates one
+    that is already in the sheet.
     """
     tz = ZoneInfo(cfg.get("timezone", "Asia/Bangkok"))
-    today = datetime.now(tz).date()
-    have = existing_dates(ws)
+    now = datetime.now(tz)
+    have = existing_slots(ws)
+    clock = clock_times(cfg)
 
     if date_arg:
-        wanted = [datetime.strptime(date_arg, "%Y-%m-%d").date()]
+        days = [datetime.strptime(date_arg, "%Y-%m-%d").date()]
     else:
         max_back = cfg.get("max_backfill_days", 10)
-        earliest = today - timedelta(days=max_back)
-        # Resume from the day after the newest row; clamp so a long gap (or an
-        # empty sheet) does not reach past the terminal's tick history.
-        newest = max((datetime.strptime(d, "%Y-%m-%d").date() for d in have), default=None)
-        start = max(newest + timedelta(days=1), earliest) if newest else earliest
-        wanted = [
+        earliest = now.date() - timedelta(days=max_back)
+        # Resume from the newest date present; clamp so a long gap (or an empty
+        # sheet) does not reach past the terminal's tick history. Starting ON
+        # the newest date rather than after it matters now that a date can be
+        # half-filled - the 10:00 row logged while 21:00 is still to come.
+        newest = max((datetime.strptime(d, "%Y-%m-%d").date() for d, _ in have), default=None)
+        start = max(newest, earliest) if newest else earliest
+        days = [
             start + timedelta(days=i)
-            for i in range((today - start).days + 1)
+            for i in range((now.date() - start).days + 1)
             if (start + timedelta(days=i)).weekday() < 5  # skip Sat/Sun
         ]
 
     pending = []
-    for day in wanted:
-        if day.strftime("%Y-%m-%d") in have:
-            logger.info("%s already logged — skipping.", day)
-            continue
-        if snapshot_times(cfg, day)[0] > datetime.now(tz):
-            logger.info("%s snapshot time has not passed yet — skipping.", day)
-            continue
-        pending.append(day)
+    for day in days:
+        for at in clock:
+            key = (day.strftime("%Y-%m-%d"), at.strftime("%H:%M"))
+            if key in have:
+                logger.info("%s %s already logged — skipping.", *key)
+                continue
+            if snapshot_times(cfg, day, at)[0] > now:
+                logger.info("%s %s has not come round yet — skipping.", *key)
+                continue
+            pending.append((day, at))
 
     return pending
 
@@ -386,8 +403,8 @@ def main() -> int:
         logger.info("Meta columns: %s", ", ".join(meta) or "(none)")
         logger.info("Symbols: %s", ", ".join(f"{s}@col{c}" for s, c in layout))
 
-        days = pending_days(cfg, ws, args.date)
-        if not days:
+        slots = pending_slots(cfg, ws, args.date)
+        if not slots:
             logger.info("Nothing to log — the sheet is already up to date.")
             return 0
 
@@ -396,8 +413,8 @@ def main() -> int:
         rows: list[list] = []
 
         with mt5_session(cfg["mt5_path"]):
-            for day in days:
-                target_local, target_utc = snapshot_times(cfg, day)
+            for day, at in slots:
+                target_local, target_utc = snapshot_times(cfg, day, at)
                 logger.info(
                     "Snapshot at %s local = %s UTC (MT5 feed time).",
                     target_local.strftime("%Y-%m-%d %H:%M:%S"),
@@ -407,15 +424,15 @@ def main() -> int:
                 quotes = fetch_quotes(symbols, target_utc, lookback)
                 if not quotes:
                     # Market holiday, or tick history no longer reaches back
-                    # this far. Skip the day rather than log an empty row.
-                    logger.warning("No quotes at all for %s — skipping the day.", day)
+                    # this far. Skip the slot rather than log an empty row.
+                    logger.warning("No quotes at all for %s %s — skipping.", day, at)
                     continue
 
                 rows.append(build_row(meta, layout, quotes, target_local))
-                logger.info("%s: %d/%d symbols.", day, len(quotes), len(layout))
+                logger.info("%s %s: %d/%d symbols.", day, at, len(quotes), len(layout))
 
         if not rows:
-            logger.error("No quotes retrieved for any pending day. Nothing written.")
+            logger.error("No quotes retrieved for any pending slot. Nothing written.")
             return 1
 
         if args.dry_run:

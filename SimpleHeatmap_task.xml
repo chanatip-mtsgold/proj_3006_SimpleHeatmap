@@ -19,6 +19,20 @@
         <WeeksInterval>1</WeeksInterval>
       </ScheduleByWeek>
     </CalendarTrigger>
+    <CalendarTrigger>
+      <StartBoundary>2026-09-24T21:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByWeek>
+        <DaysOfWeek>
+          <Monday />
+          <Tuesday />
+          <Wednesday />
+          <Thursday />
+          <Friday />
+        </DaysOfWeek>
+        <WeeksInterval>1</WeeksInterval>
+      </ScheduleByWeek>
+    </CalendarTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">

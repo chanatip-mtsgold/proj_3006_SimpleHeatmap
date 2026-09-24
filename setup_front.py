@@ -80,6 +80,11 @@ Y_AXIS = (0.0, 0.10)
 SYMS = f"{DATA}!$C$1:$BZ$1"
 ALL_LEGS = f'FILTER({SYMS},ISODD(COLUMN({SYMS})),{SYMS}<>"")'
 
+# Row number of the newest snapshot: data starts at row 3, so the count of
+# filled dates plus two. Used instead of matching on the date, which stopped
+# being unique once a second snapshot a day was added.
+LAST_ROW_EXPR = f"COUNTA({DATA}!$A$3:$A)+2"
+
 # Diverging blue <-> red on the YIELD, with a grey core rather than a single
 # neutral point: anything inside +/-4% is ordinary carry and should recede, the
 # ramp runs from there to its darkest at +/-8%. The red arm is luminance-matched
@@ -128,8 +133,13 @@ def parts(row: int, col: str) -> dict:
     Prices and TTMs are looked up by leg NAME and by the snapshot DATE, never
     by position, so `Data` can gain columns without breaking this.
     """
-    x, y = f"$A{row}", f"{col}$1"
-    dr = f"MATCH($A$1,{DATA}!$A:$A,0)"
+    # A1 now carries date PLUS time so it says which snapshot the matrix is
+    # showing; INT() strips the time back off wherever whole days are wanted.
+    x, y, today = f"$A{row}", f"{col}$1", "INT($A$1)"
+    # The last data row by position, not MATCH on the date. There is more than
+    # one snapshot a day now, and MATCH returns the FIRST row carrying a date -
+    # which would pin the matrix to the 10:00 row and never show the 21:00 one.
+    dr = LAST_ROW_EXPR
     cx, cy = f"MATCH({x},{DATA}!$1:$1,0)", f"MATCH({y},{DATA}!$1:$1,0)"
     # A symbol's own column is its BID (row 2 reads BID under the name), so ASK
     # is the column after it, and the TTM likewise sits one column along row 1.
@@ -137,7 +147,7 @@ def parts(row: int, col: str) -> dict:
     ty = f"INDEX({DATA}!$1:$1,1,{cy}+1)"
     x_ask = f"INDEX({DATA}!$A:$CA,{dr},{cx}+1)"
     y_bid = f"INDEX({DATA}!$A:$CA,{dr},{cy})"
-    dy = f"({ty}-$A$1)"
+    dy = f"({ty}-{today})"
     # The carry window the yield is earned over is the distance between the two
     # expiries, not the time left on either leg. Spot behaves as a leg expiring
     # on the snapshot date, which makes the spot row fall out of the same rule.
@@ -164,7 +174,7 @@ def parts(row: int, col: str) -> dict:
         "spread": f"({y_bid}-{x_ask})",
         # Days shown is the NEAR leg's time left - that is what forces the
         # position to be unwound - which is not the yield's denominator.
-        "days": f'IF({tx}="",{dy},MIN({tx}-$A$1,{dy}))',
+        "days": f'IF({tx}="",{dy},MIN({tx}-{today},{dy}))',
         "pct": f"(({y_bid}/{x_ask})-1)*365/{safe_gap}",
     }
 
@@ -388,7 +398,7 @@ def build(front) -> None:
 
     front.update(
         [
-            [f"=INDEX({DATA}!$A$3:$A,COUNTA({DATA}!$A$3:$A))"]
+            [f"=INDEX({DATA}!$A:$A,{LAST_ROW_EXPR})+INDEX({DATA}!$B:$B,{LAST_ROW_EXPR})"]
             + [f'=IFERROR(INDEX({ALL_LEGS},1,COLUMN()),"")' for _ in cols]
         ],
         range_name=f"A1:{last_col}1",
@@ -434,7 +444,9 @@ def style(front) -> None:
     sid = front.id
     last_col = col_letter(1 + SPAN)
 
-    front.format("A1", {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}})
+    front.format(
+        "A1", {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd hh:mm"}}
+    )
     front.format(f"A1:{last_col}1", {"textFormat": {"bold": True}})
     front.format(f"A{FIRST_ROW}:A{LAST_ROW}", {"textFormat": {"bold": True}})
     front.format(
