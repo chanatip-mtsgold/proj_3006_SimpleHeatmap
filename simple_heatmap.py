@@ -390,9 +390,14 @@ def append_rows(ws, rows: list[list]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-def report_latest(ws, legs, slot) -> None:
+def report_latest(cfg: dict, ws, legs, slot) -> None:
     """Post the newest slot to Chat. Front only ever shows the last row, so
     back-filling several slots at once still produces one report, for the last.
+
+    Nothing is posted for a slot that has already gone stale. A run that fires
+    the morning after the machine was off is back-filling history, and sending
+    last night's matrix as if it were current is worse than sending nothing -
+    the sheet still gets the row either way.
 
     A failure here is logged and swallowed: the numbers are already in the
     sheet, and losing them to a Chat outage would be the worse trade.
@@ -401,11 +406,27 @@ def report_latest(ws, legs, slot) -> None:
 
     day, at, quotes = slot
     stamp = f"{day:%Y-%m-%d} {at:%H:%M}"
+
+    local, _ = snapshot_times(cfg, day, at)
+    behind = datetime.now(local.tzinfo) - local
+    grace = timedelta(minutes=cfg.get("report_grace_minutes", 30))
+    if behind > grace:
+        logger.info(
+            "%s was logged %s late (grace %s) — sheet updated, no report sent.",
+            stamp, _hm(behind), _hm(grace),
+        )
+        return
+
     try:
         missing = [s for s in report.expected_legs(legs, day) if s not in quotes]
         report.send(ws.spreadsheet, missing, stamp, os.path.dirname(os.path.abspath(__file__)))
     except Exception:
         logger.exception("Posting the %s report failed; the sheet is still correct.", stamp)
+
+
+def _hm(delta: timedelta) -> str:
+    minutes = int(delta.total_seconds() // 60)
+    return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
 
 
 def main() -> int:
@@ -479,7 +500,7 @@ def main() -> int:
         ensure_header_row2(ws, layout)
         rng = append_rows(ws, rows)
         logger.info("Appended %d row(s) to %s.", len(rows), rng)
-        report_latest(ws, legs, logged[-1])
+        report_latest(cfg, ws, legs, logged[-1])
         return 0
 
     except Exception:

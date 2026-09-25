@@ -8,5 +8,6 @@
   ],
   "lookback_minutes": 3,
   "max_backfill_days": 10,
-  "timezone": "Asia/Bangkok"
+  "timezone": "Asia/Bangkok",
+  "report_grace_minutes": 30
 }
