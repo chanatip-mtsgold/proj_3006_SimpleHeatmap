@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-16"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>proj_3006 SimpleHeatmap - append MT5 bid/ask snapshot to Google Sheets at 10:00 Thai time on weekdays.</Description>
@@ -56,6 +56,14 @@
     <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
+    <!-- Give up on a run after ten minutes and wait for the next trigger.
+         A healthy run takes about ten seconds, so anything near this limit is
+         stuck rather than slow. No RestartOnFailure on purpose: the script
+         back fills whatever slots it missed the next time it starts, so a
+         retry would only race the same stuck resource.
+         Scheduler enforces this with a hard kill, which writes nothing to the
+         log, so the script also sets its own request timeouts and fails first
+         where it can. -->
     <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
     <Priority>7</Priority>
   </Settings>

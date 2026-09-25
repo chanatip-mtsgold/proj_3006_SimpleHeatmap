@@ -111,9 +111,22 @@ def _load_credentials() -> UserCredentials:
     return creds
 
 
-def get_worksheet(cfg: dict):
+# Task Scheduler kills the run at ExecutionTimeLimit, which is a hard kill
+# with no log line and no regard for what the run was in the middle of. These
+# keep every blocking call well inside that window, so a stall ends as a
+# logged failure of our own instead.
+HTTP_TIMEOUT = (10, 30)  # (connect, read) seconds, per request
+MT5_TIMEOUT_MS = 30_000
+
+
+def sheets_client():
     client = gspread.authorize(_load_credentials())
-    sh = client.open_by_key(cfg["spreadsheet_id"])
+    client.set_timeout(HTTP_TIMEOUT)
+    return client
+
+
+def get_worksheet(cfg: dict):
+    sh = sheets_client().open_by_key(cfg["spreadsheet_id"])
     name = (cfg.get("sheet_name") or "").strip()
     ws = sh.worksheet(name) if name else sh.sheet1
     logger.info("Opened worksheet '%s'.", ws.title)
@@ -185,7 +198,7 @@ def ensure_header_row2(ws, layout: list[tuple[str, int]]) -> None:
 @contextmanager
 def mt5_session(mt5_path: str):
     """Attach to the already-running, already-logged-in terminal."""
-    if not mt5.initialize(path=mt5_path):
+    if not mt5.initialize(path=mt5_path, timeout=MT5_TIMEOUT_MS):
         raise RuntimeError(f"mt5.initialize failed: {mt5.last_error()}")
     try:
         yield

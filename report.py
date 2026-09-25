@@ -30,7 +30,7 @@ from google.oauth2.credentials import Credentials  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 
 import setup_front as sf  # noqa: E402
-from simple_heatmap import GITHUB_DIR, logger  # noqa: E402
+from simple_heatmap import GITHUB_DIR, HTTP_TIMEOUT, logger  # noqa: E402
 
 FRONT = "Front"
 
@@ -245,6 +245,7 @@ def post(space: str, text: str, png: str | None = None) -> str:
                 "metadata": (None, json.dumps({"filename": name}), "application/json"),
                 "file": (name, blob, "image/png"),
             },
+            timeout=HTTP_TIMEOUT,
         )
         up.raise_for_status()
         body["attachment"] = [{
@@ -253,7 +254,8 @@ def post(space: str, text: str, png: str | None = None) -> str:
             "attachmentDataRef": up.json()["attachmentDataRef"],
         }]
 
-    res = session.post(f"https://chat.googleapis.com/v1/spaces/{space}/messages", json=body)
+    res = session.post(f"https://chat.googleapis.com/v1/spaces/{space}/messages",
+                       json=body, timeout=HTTP_TIMEOUT)
     res.raise_for_status()
     return res.json()["name"]
 
@@ -306,9 +308,7 @@ def send(spreadsheet, missing: list[str], stamp: str, out_dir: str) -> bool:
 
 
 def main() -> int:
-    import gspread
-
-    from simple_heatmap import _load_credentials, load_config, setup_logger
+    from simple_heatmap import load_config, setup_logger, sheets_client
 
     parser = argparse.ArgumentParser(description="Render Front and post it to Google Chat.")
     parser.add_argument("--out", metavar="PATH", help="Write the PNG here and post nothing.")
@@ -317,7 +317,7 @@ def main() -> int:
     cfg = load_config()
     setup_logger(cfg["log_file"])
     try:
-        book = gspread.authorize(_load_credentials()).open_by_key(cfg["spreadsheet_id"])
+        book = sheets_client().open_by_key(cfg["spreadsheet_id"])
         grid = read_front(book)
         if args.out:
             logger.info("Wrote %s.", render(grid, args.out))
