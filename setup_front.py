@@ -90,10 +90,20 @@ TTMS = f"{DATA}!$D$1:$CA$1"  # one column along, so element k is leg k's TTM
 # shifts, and everything downstream (mirror, colours, chart) is keyed on this
 # list so it all moves together.
 ROLL_OFF_DAYS = 7
-ALL_LEGS = (
-    f'FILTER({SYMS},ISODD(COLUMN({SYMS})),{SYMS}<>"",'
+
+# Display order is spot, then COMEX, then TFEX, each by TTM - not Data's
+# column order. The append-only rule puts every new contract at the far right
+# of Data, so column order is roll history; sorting here is what keeps a new
+# COMEX contract next to the other COMEX ones without ever moving a column.
+# The venue test matches venue() below.
+_VENUE_KEY = f'IF({TTMS}="",0,IF(LEFT({SYMS},4)="CMX.",1,2))'
+_TTM_KEY = f'IF({TTMS}="",0,{TTMS})'
+_LIVE = (
+    f'FILTER(ARRAYFORMULA({{{SYMS};{_VENUE_KEY};{_TTM_KEY}}}),'
+    f'ISODD(COLUMN({SYMS})),{SYMS}<>"",'
     f'({TTMS}="")+({TTMS}>=INT($A$1)+{ROLL_OFF_DAYS}))'
 )
+ALL_LEGS = f"TRANSPOSE(INDEX(SORT(TRANSPOSE({_LIVE}),2,TRUE,3,TRUE),0,1))"
 
 # Row number of the newest snapshot: data starts at row 3, so the count of
 # filled dates plus two. Used instead of matching on the date, which stopped
