@@ -18,7 +18,7 @@ import json
 import os
 import re
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import matplotlib
 
@@ -269,19 +269,21 @@ def post(space: str, text: str, png: str | None = None) -> str:
 # Entry points
 # --------------------------------------------------------------------------- #
 def expected_legs(legs: list[tuple[str, int, str]], day: date) -> list[str]:
-    """Legs that should have quoted: spot, plus contracts not yet expired.
+    """Legs that should have quoted: spot, plus contracts Front still shows.
 
-    Without the expiry test the report would go silent for good the first time
-    a contract rolled off — MT5 stops knowing the symbol, so a run could never
-    be 'complete' again.
+    Uses the same ROLL_OFF_DAYS cut-off as Front, so a leg is expected exactly
+    while it is on the matrix. Without the cut-off the report would go silent
+    the first time a contract rolled off — the broker stops quoting it a day
+    or more before its TTM, so a run could never be 'complete' again.
     """
+    horizon = day + timedelta(days=sf.ROLL_OFF_DAYS)
     live = []
     for name, _, ttm in legs:
         if not ttm:
             live.append(name)
             continue
         try:
-            if datetime.strptime(ttm.strip(), "%Y-%m-%d").date() >= day:
+            if datetime.strptime(ttm.strip(), "%Y-%m-%d").date() >= horizon:
                 live.append(name)
         except ValueError:
             logger.warning("Leg %s has an unreadable TTM %r — treating it as live.", name, ttm)

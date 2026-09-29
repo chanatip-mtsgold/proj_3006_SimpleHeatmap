@@ -80,14 +80,19 @@ Y_AXIS = (0.0, 0.10)
 SYMS = f"{DATA}!$C$1:$BZ$1"
 TTMS = f"{DATA}!$D$1:$CA$1"  # one column along, so element k is leg k's TTM
 
-# Legs still alive on the snapshot date: spot (no TTM), or a contract whose
-# TTM has not passed. Filtering here rather than in Data is what lets an
-# expired contract drop out of the matrix while its column - and its history -
-# stays in Data untouched. Everything downstream is keyed on this list, so the
-# triangle, the mirror, the colours and the chart all shift together.
+# A leg leaves the matrix once it is closer than ROLL_OFF_DAYS to its TTM.
+# Waiting for the TTM itself was too late: by then the broker has already
+# stopped trading the contract (CMX.GCV6 last traded 29 Sep against a TTM of
+# 30 Sep), and every pair it anchors is one nobody can put on any more. The
+# same seven days as MIN_GAP, because inside that window the spot cell was
+# already being suppressed - this retires the rest of the leg at the same
+# point. Its column and history stay in Data untouched; only the matrix
+# shifts, and everything downstream (mirror, colours, chart) is keyed on this
+# list so it all moves together.
+ROLL_OFF_DAYS = 7
 ALL_LEGS = (
     f'FILTER({SYMS},ISODD(COLUMN({SYMS})),{SYMS}<>"",'
-    f'({TTMS}="")+({TTMS}>=INT($A$1)))'
+    f'({TTMS}="")+({TTMS}>=INT($A$1)+{ROLL_OFF_DAYS}))'
 )
 
 # Row number of the newest snapshot: data starts at row 3, so the count of
