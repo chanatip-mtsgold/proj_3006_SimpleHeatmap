@@ -418,7 +418,10 @@ def report_latest(cfg: dict, ws, legs, slot) -> None:
         return
 
     try:
-        missing = [s for s in report.expected_legs(legs, day) if s not in quotes]
+        held = set(cfg.get("unquoted_symbols", []))
+        missing = [
+            s for s in report.expected_legs(legs, day) if s not in quotes and s not in held
+        ]
         report.send(ws.spreadsheet, missing, stamp, os.path.dirname(os.path.abspath(__file__)))
     except Exception:
         logger.exception("Posting the %s report failed; the sheet is still correct.", stamp)
@@ -463,7 +466,13 @@ def main() -> int:
             logger.info("Nothing to log — the sheet is already up to date.")
             return 0
 
-        symbols = [s for s, _ in layout]
+        # Legs that have a column but should not be priced yet - typically a
+        # contract added ahead of the broker listing it. They keep their slot
+        # in Data and simply stay blank until taken off this list.
+        held = set(cfg.get("unquoted_symbols", []))
+        if held:
+            logger.info("Not quoting (unquoted_symbols): %s", ", ".join(sorted(held)))
+        symbols = [s for s, _ in layout if s not in held]
         lookback = cfg.get("lookback_minutes", 3)
         rows: list[list] = []
         logged: list[tuple[date, dtime, dict]] = []

@@ -71,15 +71,20 @@ def read_front(spreadsheet) -> list[list[str]]:
     rows = [r + [""] * (GRID_SPAN - len(r)) for r in rows]
     rows += [[""] * GRID_SPAN for _ in range(GRID_SPAN - len(rows))]
 
-    # Front is built out to MAX_LEGS; the unused tail is blank and must not
-    # become empty rows and columns in the image.
-    keep = [j for j in range(1, GRID_SPAN) if rows[0][j].strip()]
-    header = [rows[0][0]] + [rows[0][j] for j in keep]
-    body = [
-        [rows[i][0]] + [rows[i][j] for j in keep]
-        for i in range(1, GRID_SPAN)
-        if rows[i][0].strip()
+    # Keep a column or row only if at least one of its cells is priced. That
+    # drops Front's unused tail (it is built out to MAX_LEGS) and also a leg
+    # that has a slot but no quotes yet - on the sheet it is a placeholder, in
+    # a report it would only be an empty stripe.
+    keep_cols = [
+        j for j in range(1, GRID_SPAN)
+        if rows[0][j].strip() and any(rows[i][j].strip() for i in range(1, GRID_SPAN))
     ]
+    keep_rows = [
+        i for i in range(1, GRID_SPAN)
+        if rows[i][0].strip() and any(rows[i][j].strip() for j in keep_cols)
+    ]
+    header = [rows[0][0]] + [rows[0][j] for j in keep_cols]
+    body = [[rows[i][0]] + [rows[i][j] for j in keep_cols] for i in keep_rows]
     return [header] + body
 
 

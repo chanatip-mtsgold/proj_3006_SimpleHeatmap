@@ -9,5 +9,9 @@
   "lookback_minutes": 3,
   "max_backfill_days": 10,
   "timezone": "Asia/Bangkok",
-  "report_grace_minutes": 30
+  "report_grace_minutes": 30,
+  "unquoted_symbols": [
+    "GOH27",
+    "CMX.GCM7"
+  ]
 }

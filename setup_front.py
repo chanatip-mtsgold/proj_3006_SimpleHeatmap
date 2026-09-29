@@ -78,7 +78,17 @@ Y_AXIS = (0.0, 0.10)
 # Symbol names sit on odd columns of `Data` row 1; ranges are the same width so
 # FILTER lines them up. CA must exist as a real column (see simple_heatmap).
 SYMS = f"{DATA}!$C$1:$BZ$1"
-ALL_LEGS = f'FILTER({SYMS},ISODD(COLUMN({SYMS})),{SYMS}<>"")'
+TTMS = f"{DATA}!$D$1:$CA$1"  # one column along, so element k is leg k's TTM
+
+# Legs still alive on the snapshot date: spot (no TTM), or a contract whose
+# TTM has not passed. Filtering here rather than in Data is what lets an
+# expired contract drop out of the matrix while its column - and its history -
+# stays in Data untouched. Everything downstream is keyed on this list, so the
+# triangle, the mirror, the colours and the chart all shift together.
+ALL_LEGS = (
+    f'FILTER({SYMS},ISODD(COLUMN({SYMS})),{SYMS}<>"",'
+    f'({TTMS}="")+({TTMS}>=INT($A$1)))'
+)
 
 # Row number of the newest snapshot: data starts at row 3, so the count of
 # filled dates plus two. Used instead of matching on the date, which stopped
