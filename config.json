@@ -11,7 +11,6 @@
   "timezone": "Asia/Bangkok",
   "report_grace_minutes": 30,
   "unquoted_symbols": [
-    "GOH27",
     "CMX.GCM7"
   ]
 }
