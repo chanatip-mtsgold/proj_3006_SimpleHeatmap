@@ -33,6 +33,7 @@ import setup_front as sf  # noqa: E402
 from simple_heatmap import GITHUB_DIR, HTTP_TIMEOUT, logger  # noqa: E402
 
 FRONT = "Front"
+DATA = "Data"
 
 # The space id lives beside the other per-machine settings rather than in
 # config.json, which is committed. The key name is the constant, not the id.
@@ -88,6 +89,21 @@ def read_front(spreadsheet) -> list[list[str]]:
     return [header] + body
 
 
+def read_prices(spreadsheet) -> dict[str, tuple[str, str]]:
+    """{leg: (bid, ask)} from the newest Data row - the same row Front prices.
+
+    Kept as the sheet's own strings, so the image shows exactly the digits
+    that went into the cells rather than a float re-rendered to some width.
+    """
+    from simple_heatmap import parse_header  # deferred: avoids an import cycle
+
+    ws = spreadsheet.worksheet(DATA)
+    _, legs = parse_header(ws.row_values(1))
+    last = ws.row_values(len(ws.col_values(1)))
+    cell = lambda c: last[c - 1].strip() if c - 1 < len(last) else ""  # noqa: E731
+    return {name: (cell(col), cell(col + 1)) for name, col, _ in legs}
+
+
 # --------------------------------------------------------------------------- #
 # Render
 # --------------------------------------------------------------------------- #
@@ -112,18 +128,36 @@ def shade(yld: float | None) -> str:
 
 
 CELL_W, CELL_H = 1.0, 0.62
-HDR_W, HDR_H = 1.15, 0.5
-PAD_X, FOOT_H = 0.28, 1.80
+HDR_W = 1.40  # row labels plus the LONG bar beside them
+PAD_X, FOOT_H = 0.28, 1.40
+TOP_H = 1.45  # title, scale key, column labels + bid, and the SHORT bar
+
+# Every cell is Y_BID - X_ASK: buy the row leg, sell the column leg. The bars
+# say so on the matrix itself, so nobody has to remember which way round it
+# goes. Red and green are the validated palette slots from setup_front, and
+# each bar carries its word as well, so the sides never rest on colour alone.
+LONG_COLOUR, SHORT_COLOUR = sf.CATEGORICAL[5], sf.CATEGORICAL[7]
+BAR = 0.17  # bar thickness
+BAR_GAP = 0.06  # bar to cells
+
+# Below this the subtitle and the scale key collide in the header row.
+MIN_FIG_W = 7.4
 
 
-def render(grid: list[list[str]], path: str) -> str:
+def render(grid: list[list[str]], path: str,
+           prices: dict[str, tuple[str, str]] | None = None) -> str:
     stamp = grid[0][0]
-    cols = [c.replace("CMX.", "") for c in grid[0][1:]]
-    rows = [r[0].replace("CMX.", "") for r in grid[1:]]
+    prices = prices or {}
+    col_keys, row_keys = grid[0][1:], [r[0] for r in grid[1:]]
+    cols = [c.replace("CMX.", "") for c in col_keys]
+    rows = [r.replace("CMX.", "") for r in row_keys]
     col_venue, row_venue = [venue(c) for c in cols], [venue(r) for r in rows]
 
-    fig_w = (HDR_W + len(cols) * CELL_W) * 1.05
-    fig_h = HDR_H + len(rows) * CELL_H + FOOT_H
+    x0 = PAD_X + HDR_W
+    # Width is built up from the parts rather than scaled, so the right-hand
+    # column is never clipped however few legs there are.
+    fig_w = max(x0 + len(cols) * CELL_W + PAD_X, MIN_FIG_W)
+    fig_h = TOP_H + len(rows) * CELL_H + FOOT_H
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=160)
     fig.patch.set_facecolor(PAGE)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -131,23 +165,36 @@ def render(grid: list[list[str]], path: str) -> str:
     ax.set_xlim(0, fig_w)
     ax.set_ylim(0, fig_h)
 
-    top = fig_h - 0.95
+    top = fig_h - TOP_H
     ax.text(PAD_X, fig_h - 0.42, "Gold carry", fontsize=15, fontweight="bold",
             color=CROSS_EDGE, va="center")
     ax.text(PAD_X + 1.62, fig_h - 0.44, "Front  -  " + stamp, fontsize=9.5,
             color=MUTED, va="center")
 
     _scale_key(ax, fig_w, fig_h)
+    _side_bars(ax, x0, top, len(cols), len(rows))
 
-    x0 = PAD_X + HDR_W
+    # Each label carries the price its side of the trade is done at: the
+    # column is sold, so its bid; the row is bought, so its ask.
+    label_y = top + BAR_GAP + BAR
     for j, name in enumerate(cols):
-        ax.text(x0 + (j + 0.5) * CELL_W, top + 0.16, name, fontsize=9.5,
+        cx = x0 + (j + 0.5) * CELL_W
+        bid = prices.get(col_keys[j], ("", ""))[0]
+        ax.text(cx, label_y + (0.37 if bid else 0.17), name, fontsize=9.5,
                 fontweight="bold", color=INK, ha="center", va="center")
+        if bid:
+            ax.text(cx, label_y + 0.15, "bid " + bid, fontsize=7.8, color=MUTED,
+                    ha="center", va="center")
 
     for i, name in enumerate(rows):
         y = top - (i + 1) * CELL_H
-        ax.text(x0 - 0.12, y + CELL_H / 2, name, fontsize=9.5, fontweight="bold",
-                color=INK, ha="right", va="center")
+        lx = x0 - BAR_GAP - BAR - 0.10
+        ask = prices.get(row_keys[i], ("", ""))[1]
+        ax.text(lx, y + CELL_H / 2 + (0.10 if ask else 0), name, fontsize=9.5,
+                fontweight="bold", color=INK, ha="right", va="center")
+        if ask:
+            ax.text(lx, y + CELL_H / 2 - 0.13, "ask " + ask, fontsize=7.8,
+                    color=MUTED, ha="right", va="center")
         for j in range(len(cols)):
             cross = (row_venue[i] != col_venue[j]
                      and "SPOT" not in (row_venue[i], col_venue[j]))
@@ -183,6 +230,23 @@ def _cell(ax, raw: str, x: float, y: float, cross: bool) -> None:
                 fontsize=7, color=FAINT, ha="center", va="center")
 
 
+def _side_bars(ax, x0: float, top: float, n_cols: int, n_rows: int) -> None:
+    """SHORT across the column labels, LONG down the row labels."""
+    width = n_cols * CELL_W - 0.04
+    ax.add_patch(Rectangle((x0 + 0.02, top + BAR_GAP), width, BAR,
+                           facecolor=SHORT_COLOUR, edgecolor="none"))
+    ax.text(x0 + 0.02 + width / 2, top + BAR_GAP + BAR / 2, "SHORT  (sell at bid)",
+            fontsize=7.5, fontweight="bold", color=PAGE, ha="center", va="center")
+
+    height = n_rows * CELL_H - 0.06
+    left = x0 - BAR_GAP - BAR
+    ax.add_patch(Rectangle((left, top - n_rows * CELL_H + 0.03), BAR, height,
+                           facecolor=LONG_COLOUR, edgecolor="none"))
+    ax.text(left + BAR / 2, top - n_rows * CELL_H + 0.03 + height / 2,
+            "LONG  (buy at ask)", fontsize=7.5, fontweight="bold", color=PAGE,
+            ha="center", va="center", rotation=90)
+
+
 def _scale_key(ax, fig_w: float, fig_h: float) -> None:
     """One swatch per band, so a colour can be read back as a number."""
     sw_w, sw_h = 0.30, 0.15
@@ -205,7 +269,7 @@ def _scale_key(ax, fig_w: float, fig_h: float) -> None:
 
 
 def _footnotes(ax, fy: float) -> None:
-    ax.text(PAD_X, fy, "each cell = annualized carry of the column leg over the row leg",
+    ax.text(PAD_X, fy, "each cell = buy the row leg, sell the column leg; yield is that spread annualized",
             fontsize=8.6, color=MUTED, va="center")
     ax.text(PAD_X, fy - 0.22, "yield  /  spread (points)  /  days to the nearer expiry",
             fontsize=8.6, color=MUTED, va="center")
@@ -308,7 +372,7 @@ def send(spreadsheet, missing: list[str], stamp: str, out_dir: str) -> bool:
         return True
 
     png = os.path.join(out_dir, "front.png")
-    render(read_front(spreadsheet), png)
+    render(read_front(spreadsheet), png, read_prices(spreadsheet))
     logger.info("Posted %s to spaces/%s.", post(space, f"*Gold carry* — Front, {stamp}", png),
                 space)
     return True
@@ -327,7 +391,7 @@ def main() -> int:
         book = sheets_client().open_by_key(cfg["spreadsheet_id"])
         grid = read_front(book)
         if args.out:
-            logger.info("Wrote %s.", render(grid, args.out))
+            logger.info("Wrote %s.", render(grid, args.out, read_prices(book)))
             return 0
         send(book, [], grid[0][0], os.path.dirname(os.path.abspath(__file__)))
         return 0
