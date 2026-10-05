@@ -95,7 +95,10 @@ def short(symbol: str) -> str:
     return name[0] + "2" + name[1:] if len(name) == 2 else name
 
 HELP_COL = 27  # AA - clear of the data and of where the charts float
-CHART_COL = 11  # L
+# One blank column after the price table. Derived, not fixed: at a fixed L the
+# charts sat on top of GOZ26 and GOH27 once the table grew to twelve contracts.
+CHART_COL = len(SYMBOLS) + 2  # 0-based anchor index
+assert CHART_COL < HELP_COL - 1, "price table has grown into the hidden series block"
 
 
 def a1(col: int) -> str:
@@ -201,6 +204,17 @@ def write_tab(ws, rows: dict, series: dict) -> tuple[int, int]:
     if ws.col_count < need:
         ws.add_cols(need - ws.col_count)
     ws.clear()
+    # clear() leaves column state alone, so a column hidden or inserted by hand
+    # survives a rebuild and the series land somewhere the charts do not look.
+    # Start from every column visible; add_charts hides the series block again.
+    ws.spreadsheet.batch_update({"requests": [{
+        "updateDimensionProperties": {
+            "range": {"sheetId": ws.id, "dimension": "COLUMNS",
+                      "startIndex": 0, "endIndex": ws.col_count},
+            "properties": {"hiddenByUser": False},
+            "fields": "hiddenByUser",
+        }
+    }]})
 
     table = [["Date", *SYMBOLS]]
     for day in sorted(rows):
