@@ -5,10 +5,11 @@ today; this pulls the 10:00 Asia/Bangkok M1 open for the 2026 gold contracts
 that have already come and gone, so the calendar spreads can be looked at over
 a stretch of time rather than one snapshot.
 
-Nine contracts across two venues:
+Twelve contracts across two venues:
 
-    F.US.GCE*26   COMEX, physically delivered, two-month cycle
-    GO*26         TFEX Gold Online, cash settled, quarterly
+    F.US.GCE*26   COMEX 2026, physically delivered, two-month cycle
+    CMX.GC*7      COMEX 2027 - the F.US.GCE family stops at Z26
+    GO*26, GOH27  TFEX Gold Online, cash settled, quarterly
 
     uv run python backfill.py             # reuse the cached pull
     uv run python backfill.py --refetch   # pull from MT5 again (~10 min)
@@ -62,10 +63,36 @@ EXPIRY = {
     "GOM26": dt.date(2026, 6, 29),
     "GOU26": dt.date(2026, 9, 29),
     "GOZ26": dt.date(2026, 12, 29),
+    # The broker's F.US.GCE family has nothing past Z26, so 2027 comes from
+    # the CMX family the daily job uses. Same exchange contract under another
+    # name: both quote 4462.6 for Z26 at 10:00 on 2026-09-10.
+    "CMX.GCG7": dt.date(2027, 1, 29),
+    "CMX.GCJ27": dt.date(2027, 3, 31),
+    "GOH27": dt.date(2027, 3, 30),
 }
-COMEX = [s for s in EXPIRY if s.startswith("F.US.")]
-TFEX = [s for s in EXPIRY if not s.startswith("F.US.")]
+
+
+def is_comex(symbol: str) -> bool:
+    return symbol.startswith(("F.US.", "CMX."))
+
+
+# Expiry order within each venue, since adjacent pairs are taken in list order
+# and the two families would otherwise interleave by when they were added.
+COMEX = sorted((s for s in EXPIRY if is_comex(s)), key=EXPIRY.get)
+TFEX = sorted((s for s in EXPIRY if not is_comex(s)), key=EXPIRY.get)
 SYMBOLS = COMEX + TFEX
+
+# Second name to try when the first has no bar at the minute asked for. The
+# two families each have their own holes - on 2026-10-05 F.US.GCEZ26 had the
+# 10:00 bar and CMX.GCZ6 stopped at 09:23, on 2026-08-03 the other way round -
+# so one contract read through both is more complete than either alone.
+ALIASES = {"F.US.GCEZ26": "CMX.GCZ6"}
+
+
+def short(symbol: str) -> str:
+    """Month code plus two-digit year whichever family it is: Z26, G27, H27."""
+    name = symbol.replace("F.US.GCE", "").replace("CMX.GC", "")
+    return name[0] + "2" + name[1:] if len(name) == 2 else name
 
 HELP_COL = 27  # AA - clear of the data and of where the charts float
 CHART_COL = 11  # L
@@ -101,7 +128,7 @@ def fetch(cfg: dict) -> dict:
 
     rows: dict[str, dict] = {}
     with mt5_session(cfg["mt5_path"]):
-        for s in SYMBOLS:
+        for s in [*SYMBOLS, *ALIASES.values()]:
             if not mt5.symbol_select(s, True):
                 logger.warning("symbol_select('%s') failed: %s", s, mt5.last_error())
 
@@ -112,12 +139,16 @@ def fetch(cfg: dict) -> dict:
             naive = target.astimezone().replace(tzinfo=None)
             row = {}
             for s in SYMBOLS:
-                r = mt5.copy_rates_from(s, mt5.TIMEFRAME_M1, naive, 1)
-                if r is None or not len(r):
-                    continue
-                if dt.datetime.fromtimestamp(int(r[0]["time"]), tz=dt.timezone.utc) != target:
-                    continue
-                row[s] = round(float(r[0]["open"]), 2)
+                for source in (s, ALIASES.get(s)):
+                    if source is None:
+                        continue
+                    r = mt5.copy_rates_from(source, mt5.TIMEFRAME_M1, naive, 1)
+                    if r is None or not len(r):
+                        continue
+                    if dt.datetime.fromtimestamp(int(r[0]["time"]), tz=dt.timezone.utc) != target:
+                        continue
+                    row[s] = round(float(r[0]["open"]), 2)
+                    break
             if row:
                 rows[day.isoformat()] = row
             if n % 40 == 0:
@@ -156,7 +187,7 @@ def pair_series(rows: dict) -> dict:
                     round(spread, 2),
                     round(spread / row[near] * 365 / window * 100, 3),
                 )
-            label = f"{far.replace('F.US.GCE', '')} - {near.replace('F.US.GCE', '')}"
+            label = f"{short(far)} - {short(near)}"
             out[label] = point
     return out
 
@@ -229,6 +260,13 @@ def add_charts(sh, ws, names: list, grid_rows: int) -> int:
             }
         }
 
+    # Ten pairs would wrap the eight-slot palette and put two series in one
+    # colour. Colour by position within the venue instead, and tell the
+    # venues apart by line: solid COMEX, dashed TFEX.
+    n_comex = len(COMEX) - 1
+    slot = [i if i < n_comex else i - n_comex for i in range(len(names))]
+    dash = ["SOLID" if i < n_comex else "MEDIUM_DASHED" for i in range(len(names))]
+
     def chart(title, y_title, offset, anchor_row, y_range=None) -> dict:
         left = {"position": "LEFT_AXIS", "title": y_title}
         if y_range:
@@ -242,7 +280,7 @@ def add_charts(sh, ws, names: list, grid_rows: int) -> int:
                     "spec": {
                         "title": title,
                         "subtitle": "x=0 is the near leg's first notice (COMEX) "
-                        "or last trading day (TFEX)",
+                        "or last trading day (TFEX). Solid COMEX, dashed TFEX",
                         # The series columns are hidden; without this the chart
                         # reads them as absent and draws nothing.
                         "hiddenDimensionStrategy": "SHOW_ALL",
@@ -264,8 +302,8 @@ def add_charts(sh, ws, names: list, grid_rows: int) -> int:
                                 {
                                     "series": source(HELP_COL + offset + i),
                                     "targetAxis": "LEFT_AXIS",
-                                    "color": rgb(CATEGORICAL[i % len(CATEGORICAL)]),
-                                    "lineStyle": {"width": 2, "type": "SOLID"},
+                                    "color": rgb(CATEGORICAL[slot[i]]),
+                                    "lineStyle": {"width": 2, "type": dash[i]},
                                     "pointStyle": {"size": 3, "shape": "CIRCLE"},
                                 }
                                 for i in range(len(names))
