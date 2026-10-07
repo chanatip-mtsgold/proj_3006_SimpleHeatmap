@@ -335,13 +335,14 @@ def matched_series(rows: dict) -> dict:
 #   GOU26 - Z26   September against December, over August and September
 #                 (GOU26 last traded 29 Sep).
 #
-# The last field puts a pair on the carry chart too. GOU26 - Z26 qualifies:
-# 62 days between GOU26's last trade and Z26's first notice is a window that
-# annualizes cleanly. Its yield is the carry of long GOU26, short Z26 - near
-# leg long, far leg short, like every other line on that chart - so it is
-# positive there while its TFEX - COMEX spread is negative.
+# The last field puts a pair on the carry chart too. Both qualify: 32 days
+# from GOM26's last trade to Q26's first notice and 62 from GOU26's to Z26's
+# are windows that annualize cleanly, like GOZ26 - Z26's 29. The yield is the
+# carry of long the TFEX leg, short the COMEX one - near leg long, far leg
+# short, like every other line on that chart - so it is positive there while
+# the TFEX - COMEX spread is negative.
 EXTRA_SPREADS = [
-    ("F.US.GCEQ26", "GOM26", dt.date(2026, 5, 28), dt.date(2026, 6, 30), False),
+    ("F.US.GCEQ26", "GOM26", dt.date(2026, 5, 28), dt.date(2026, 6, 30), True),
     ("F.US.GCEZ26", "GOU26", dt.date(2026, 8, 1), dt.date(2026, 9, 30), True),
 ]
 
