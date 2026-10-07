@@ -94,11 +94,15 @@ def short(symbol: str) -> str:
     name = symbol.replace("F.US.GCE", "").replace("CMX.GC", "")
     return name[0] + "2" + name[1:] if len(name) == 2 else name
 
-HELP_COL = 27  # AA - clear of the data and of where the charts float
+# The chart series live on their own hidden tab, not in hidden columns of
+# Back. Twice a column was inserted or deleted on Back by hand after a
+# rebuild; the series block shifted with it and both charts came up empty.
+# Nothing done to Back's columns can reach a separate tab.
+SERIES_TAB = "Back_series"
+
 # One blank column after the price table. Derived, not fixed: at a fixed L the
 # charts sat on top of GOZ26 and GOH27 once the table grew to twelve contracts.
 CHART_COL = len(SYMBOLS) + 2  # 0-based anchor index
-assert CHART_COL < HELP_COL - 1, "price table has grown into the hidden series block"
 
 
 # Darkest first. Every shade clears 3:1 against the white chart background,
@@ -213,15 +217,29 @@ def pair_series(rows: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # Sheet
 # --------------------------------------------------------------------------- #
-def write_tab(ws, rows: dict, series: dict) -> tuple[int, int]:
+def series_tab(sh, cols: int):
+    """The hidden tab the charts read from, created on first use."""
+    try:
+        ws = sh.worksheet(SERIES_TAB)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(SERIES_TAB, rows=1000, cols=cols)
+    if ws.col_count < cols:
+        ws.add_cols(cols - ws.col_count)
+    sh.batch_update({"requests": [{
+        "updateSheetProperties": {
+            "properties": {"sheetId": ws.id, "hidden": True},
+            "fields": "hidden",
+        }
+    }]})
+    return ws
+
+
+def write_tab(ws, data_ws, rows: dict, series: dict) -> tuple[int, int]:
     names = list(series)
-    need = HELP_COL + 2 * len(names)
-    if ws.col_count < need:
-        ws.add_cols(need - ws.col_count)
     ws.clear()
-    # clear() leaves column state alone, so a column hidden or inserted by hand
-    # survives a rebuild and the series land somewhere the charts do not look.
-    # Start from every column visible; add_charts hides the series block again.
+    data_ws.clear()
+    # Columns left hidden by the old layout (series block on Back itself), or
+    # hidden by hand since, would otherwise survive the rebuild.
     ws.spreadsheet.batch_update({"requests": [{
         "updateDimensionProperties": {
             "range": {"sheetId": ws.id, "dimension": "COLUMNS",
@@ -255,9 +273,11 @@ def write_tab(ws, rows: dict, series: dict) -> tuple[int, int]:
                 + ["" if j != i else pts for j in range(len(names))]
                 + ["" if j != i else pct for j in range(len(names))]
             )
-    ws.update(
+    if data_ws.row_count < len(grid):
+        data_ws.add_rows(len(grid) - data_ws.row_count)
+    data_ws.update(
         grid,
-        range_name=f"{a1(HELP_COL)}1:{a1(HELP_COL + 2 * len(names))}{len(grid)}",
+        range_name=f"A1:{a1(1 + 2 * len(names))}{len(grid)}",
         value_input_option="USER_ENTERED",
     )
 
@@ -271,15 +291,16 @@ def write_tab(ws, rows: dict, series: dict) -> tuple[int, int]:
     return len(table) - 1, len(grid)
 
 
-def add_charts(sh, ws, names: list, grid_rows: int) -> int:
+def add_charts(sh, ws, data_ws, names: list, grid_rows: int) -> int:
     sid = ws.id
+    data_sid = data_ws.id
 
     def source(col: int) -> dict:
         return {
             "sourceRange": {
                 "sources": [
                     {
-                        "sheetId": sid,
+                        "sheetId": data_sid,
                         "startRowIndex": 0,
                         "endRowIndex": grid_rows,
                         "startColumnIndex": col - 1,
@@ -312,8 +333,8 @@ def add_charts(sh, ws, names: list, grid_rows: int) -> int:
                         "title": title,
                         "subtitle": "x=0 is the near leg's first notice (COMEX) "
                         "or last trading day (TFEX). Blue COMEX, yellow TFEX",
-                        # The series columns are hidden; without this the chart
-                        # reads them as absent and draws nothing.
+                        # The series sit on a hidden tab; without this the
+                        # chart reads them as absent and draws nothing.
                         "hiddenDimensionStrategy": "SHOW_ALL",
                         "basicChart": {
                             # SCATTER, not LINE: LINE spaces the domain evenly
@@ -328,10 +349,10 @@ def add_charts(sh, ws, names: list, grid_rows: int) -> int:
                                 },
                                 left,
                             ],
-                            "domains": [{"domain": source(HELP_COL)}],
+                            "domains": [{"domain": source(1)}],
                             "series": [
                                 {
-                                    "series": source(HELP_COL + offset + i),
+                                    "series": source(1 + offset + i),
                                     "targetAxis": "LEFT_AXIS",
                                     "color": rgb(colours[i]),
                                     "lineStyle": {"width": 2, "type": "SOLID"},
@@ -371,18 +392,6 @@ def add_charts(sh, ws, names: list, grid_rows: int) -> int:
                 *({"deleteEmbeddedObject": {"objectId": c}} for c in old),
                 chart("Calendar spread", "points", 1, 1),
                 chart("Implied carry", "%/yr", 1 + len(names), 23, (0, 8)),
-                {
-                    "updateDimensionProperties": {
-                        "range": {
-                            "sheetId": sid,
-                            "dimension": "COLUMNS",
-                            "startIndex": HELP_COL - 1,
-                            "endIndex": HELP_COL + 2 * len(names),
-                        },
-                        "properties": {"hiddenByUser": True},
-                        "fields": "hiddenByUser",
-                    }
-                },
             ]
         }
     )
@@ -411,8 +420,10 @@ def main() -> int:
         sh = gspread.authorize(_load_credentials()).open_by_key(cfg["spreadsheet_id"])
         ws = sh.worksheet(TAB)
 
-        dates, grid_rows = write_tab(ws, rows, series)
-        replaced = add_charts(sh, ws, list(series), grid_rows)
+        data_ws = series_tab(sh, 1 + 2 * len(series))
+
+        dates, grid_rows = write_tab(ws, data_ws, rows, series)
+        replaced = add_charts(sh, ws, data_ws, list(series), grid_rows)
 
         logger.info("%d dates x %d contracts.", dates, len(SYMBOLS))
         logger.info("%d pairs charted, %d old chart(s) replaced.", len(series), replaced)
