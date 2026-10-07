@@ -241,10 +241,22 @@ def cross_pairs() -> list[tuple[str, str]]:
 
 
 def cross_series(rows: dict) -> dict:
-    return {
-        f"{short(far)} - {short(near)}": pair_points(rows, near, far)
-        for near, far in cross_pairs()
-    }
+    """{label: {date: (spread, yield)}}, only while the pair is still a pair.
+
+    Cut at the COMEX leg's first notice. Past it the COMEX leg is deliverable
+    and the TFEX leg trades on to its own expiry a month or two later, so what
+    is left is a basis over a shrinking window - GOM26-M26 climbed to 11% on
+    that tail without the market having changed.
+    """
+    out = {}
+    for near, far in cross_pairs():
+        points = pair_points(rows, near, far)
+        out[f"{short(far)} - {short(near)}"] = {
+            (EXPIRY[near] + dt.timedelta(days=x)).isoformat(): v
+            for x, v in points.items()
+            if x <= 0
+        }
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -267,8 +279,34 @@ def series_tab(sh, cols: int):
     return ws
 
 
-def write_tab(ws, data_ws, rows: dict, series: dict) -> tuple[int, int]:
+def cross_col(n_within: int) -> int:
+    """1-based first column of the cross block: after x, pts and % of the venue
+    pairs, plus one blank column between the two blocks."""
+    return 1 + (1 + 2 * n_within) + 1
+
+
+def grid_block(key: str, series: dict) -> list[list]:
+    """Domain column, then each series' points, then each series' yields.
+
+    One contiguous run of rows per series rather than shared rows: a line only
+    joins consecutive non-blank cells, and sharing rows left every line in
+    fragments wherever another pair had a point. The charts are scatters, so
+    points still land on their own x whatever order the rows come in.
+    """
     names = list(series)
+    grid = [[key, *(f"{n} pts" for n in names), *(f"{n} %" for n in names)]]
+    for i, name in enumerate(names):
+        for x in sorted(series[name]):
+            pts, pct = series[name][x]
+            grid.append(
+                [x]
+                + ["" if j != i else pts for j in range(len(names))]
+                + ["" if j != i else pct for j in range(len(names))]
+            )
+    return grid
+
+
+def write_tab(ws, data_ws, rows: dict, within: dict, cross: dict) -> tuple[int, int, int]:
     ws.clear()
     data_ws.clear()
     # Columns left hidden by the old layout (series block on Back itself), or
@@ -291,28 +329,27 @@ def write_tab(ws, data_ws, rows: dict, series: dict) -> tuple[int, int]:
         value_input_option="USER_ENTERED",
     )
 
-    # One contiguous block of rows per series rather than a shared x column.
-    # A line only joins consecutive non-blank rows, and on a common axis every
-    # series is full of holes where the other pairs have points, so sharing
-    # rows left all seven lines in fragments. Grouping gives each an unbroken
-    # run; the charts are scatters, so points still land on their own x
-    # whatever order the rows come in.
-    grid = [["x", *(f"{n} pts" for n in names), *(f"{n} %" for n in names)]]
-    for i, name in enumerate(names):
-        for x in sorted(series[name]):
-            pts, pct = series[name][x]
-            grid.append(
-                [x]
-                + ["" if j != i else pts for j in range(len(names))]
-                + ["" if j != i else pct for j in range(len(names))]
-            )
-    if data_ws.row_count < len(grid):
-        data_ws.add_rows(len(grid) - data_ws.row_count)
-    data_ws.update(
-        grid,
-        range_name=f"A1:{a1(1 + 2 * len(names))}{len(grid)}",
-        value_input_option="USER_ENTERED",
-    )
+    # Two blocks side by side, each with its own domain column: the venue
+    # charts run on days-from-expiry (about -210..30) and the cross-market ones
+    # on calendar dates (serials near 46000). In one shared column every chart
+    # would stretch its axis across both ranges.
+    left = grid_block("x", within)
+    right = grid_block("Date", cross)
+    blocks = ((1, left), (cross_col(len(within)), right))
+    rows_needed = max(len(left), len(right))
+    if data_ws.row_count < rows_needed:
+        data_ws.add_rows(rows_needed - data_ws.row_count)
+    for col, block in blocks:
+        width = len(block[0])
+        data_ws.update(
+            block,
+            range_name=f"{a1(col)}1:{a1(col + width - 1)}{len(block)}",
+            value_input_option="USER_ENTERED",
+        )
+    # A date domain left as a bare serial puts 46,000 on the axis labels.
+    c = cross_col(len(within))
+    data_ws.format(f"{a1(c)}2:{a1(c)}{len(right)}",
+                   {"numberFormat": {"type": "DATE", "pattern": "d mmm"}})
 
     ws.format(f"A1:{a1(1 + len(SYMBOLS))}1", {"textFormat": {"bold": True}})
     ws.format(f"A2:A{len(table)}", {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}})
@@ -321,26 +358,22 @@ def write_tab(ws, data_ws, rows: dict, series: dict) -> tuple[int, int]:
         {"numberFormat": {"type": "NUMBER", "pattern": "0.00"}},
     )
     ws.freeze(rows=1, cols=1)
-    return len(table) - 1, len(grid)
+    return len(table) - 1, len(left), len(right)
 
 
-def add_charts(sh, ws, data_ws, names: list, n_cross: int, grid_rows: int) -> int:
+def add_charts(sh, ws, data_ws, within: list, cross: list, within_rows: int,
+               cross_rows: int) -> int:
     sid = ws.id
     data_sid = data_ws.id
 
-    cross_subtitle = (
-        "Long the COMEX leg, short the TFEX leg expiring after it. "
-        "x=0 is the COMEX leg's first notice"
-    )
-
-    def source(col: int) -> dict:
+    def source(col: int, rows: int) -> dict:
         return {
             "sourceRange": {
                 "sources": [
                     {
                         "sheetId": data_sid,
                         "startRowIndex": 0,
-                        "endRowIndex": grid_rows,
+                        "endRowIndex": rows,
                         "startColumnIndex": col - 1,
                         "endColumnIndex": col,
                     }
@@ -350,32 +383,40 @@ def add_charts(sh, ws, data_ws, names: list, n_cross: int, grid_rows: int) -> in
 
     # One hue per venue, so the market reads at a glance, and a shade per pair
     # inside it, so the lines that overlap near x = 0 can still be told apart.
-    # pair_series emits COMEX pairs first, then TFEX, each oldest first.
+    # pair_series emits COMEX pairs first, then TFEX, each oldest first. Cross
+    # pairs take the other hues, so none reads as belonging to either venue.
     n_comex = len(COMEX) - 1
-    n_within = len(names) - n_cross
-    colours = (
-        venue_shades(COMEX_SHADES, n_comex)
-        + venue_shades(TFEX_SHADES, n_within - n_comex)
-        + [CROSS_COLOURS[i % len(CROSS_COLOURS)] for i in range(n_cross)]
-    )
-    within, cross = list(range(n_within)), list(range(n_within, len(names)))
-    pts, pct = 1, 1 + len(names)  # where each metric's block of columns starts
+    venue = {
+        "start": 1, "rows": within_rows, "n": len(within),
+        "colours": venue_shades(COMEX_SHADES, n_comex)
+        + venue_shades(TFEX_SHADES, len(within) - n_comex),
+        "x_title": "Days from the near leg leaving forward",
+        "subtitle": "x=0 is the near leg's first notice (COMEX) or last "
+                    "trading day (TFEX). Blue COMEX, yellow TFEX",
+    }
+    market = {
+        "start": cross_col(len(within)), "rows": cross_rows, "n": len(cross),
+        "colours": [CROSS_COLOURS[i % len(CROSS_COLOURS)] for i in range(len(cross))],
+        "x_title": "Date",
+        "subtitle": "Long the COMEX leg, short the TFEX leg expiring after it. "
+                    "Each pair ends at the COMEX leg's first notice",
+    }
 
-    def chart(title, y_title, offset, anchor_row, y_range=None, idx=within,
-              subtitle="x=0 is the near leg's first notice (COMEX) or last "
-                       "trading day (TFEX). Blue COMEX, yellow TFEX") -> dict:
+    def chart(title, y_title, block, metric, anchor_row, y_range=None) -> dict:
+        """metric 0 = points, 1 = %/yr - which half of the block to read."""
         left = {"position": "LEFT_AXIS", "title": y_title}
         if y_range:
             left["viewWindowOptions"] = {
                 "viewWindowMin": y_range[0],
                 "viewWindowMax": y_range[1],
             }
+        first = block["start"] + 1 + metric * block["n"]
         return {
             "addChart": {
                 "chart": {
                     "spec": {
                         "title": title,
-                        "subtitle": subtitle,
+                        "subtitle": block["subtitle"],
                         # The series sit on a hidden tab; without this the
                         # chart reads them as absent and draws nothing.
                         "hiddenDimensionStrategy": "SHOW_ALL",
@@ -386,22 +427,19 @@ def add_charts(sh, ws, data_ws, names: list, n_cross: int, grid_rows: int) -> in
                             "legendPosition": "BOTTOM_LEGEND",
                             "headerCount": 1,
                             "axis": [
-                                {
-                                    "position": "BOTTOM_AXIS",
-                                    "title": "Days from the near leg leaving forward",
-                                },
+                                {"position": "BOTTOM_AXIS", "title": block["x_title"]},
                                 left,
                             ],
-                            "domains": [{"domain": source(1)}],
+                            "domains": [{"domain": source(block["start"], block["rows"])}],
                             "series": [
                                 {
-                                    "series": source(1 + offset + i),
+                                    "series": source(first + i, block["rows"]),
                                     "targetAxis": "LEFT_AXIS",
-                                    "color": rgb(colours[i]),
+                                    "color": rgb(block["colours"][i]),
                                     "lineStyle": {"width": 2, "type": "SOLID"},
                                     "pointStyle": {"size": 3, "shape": "CIRCLE"},
                                 }
-                                for i in idx
+                                for i in range(block["n"])
                             ],
                         },
                     },
@@ -433,12 +471,10 @@ def add_charts(sh, ws, data_ws, names: list, n_cross: int, grid_rows: int) -> in
         {
             "requests": [
                 *({"deleteEmbeddedObject": {"objectId": c}} for c in old),
-                chart("Calendar spread", "points", pts, 1),
-                chart("Implied carry", "%/yr", pct, 23, (0, 8)),
-                chart("Cross-market spread", "points", pts, 45,
-                      idx=cross, subtitle=cross_subtitle),
-                chart("Cross-market implied carry", "%/yr", pct, 67, (0, 12),
-                      idx=cross, subtitle=cross_subtitle),
+                chart("Calendar spread", "points", venue, 0, 1),
+                chart("Implied carry", "%/yr", venue, 1, 23, (0, 8)),
+                chart("Cross-market spread", "points", market, 0, 45),
+                chart("Cross-market implied carry", "%/yr", market, 1, 67, (0, 12)),
             ]
         }
     )
@@ -463,21 +499,25 @@ def main() -> int:
             rows = json.loads(CACHE.read_text(encoding="utf-8"))["rows"]
             logger.info("Using %d cached rows (--refetch to pull again).", len(rows))
 
+        within = pair_series(rows)
         cross = cross_series(rows)
-        series = {**pair_series(rows), **cross}
+        series = {**within, **cross}
         sh = gspread.authorize(_load_credentials()).open_by_key(cfg["spreadsheet_id"])
         ws = sh.worksheet(TAB)
 
-        data_ws = series_tab(sh, 1 + 2 * len(series))
+        data_ws = series_tab(sh, cross_col(len(within)) + 2 * len(cross))
 
-        dates, grid_rows = write_tab(ws, data_ws, rows, series)
-        replaced = add_charts(sh, ws, data_ws, list(series), len(cross), grid_rows)
+        dates, within_rows, cross_rows = write_tab(ws, data_ws, rows, within, cross)
+        replaced = add_charts(sh, ws, data_ws, list(within), list(cross),
+                              within_rows, cross_rows)
 
         logger.info("%d dates x %d contracts.", dates, len(SYMBOLS))
         logger.info("%d pairs charted, %d old chart(s) replaced.", len(series), replaced)
+        # Venue pairs are keyed by days from expiry, cross pairs by date.
         for name, pts in series.items():
             xs = sorted(pts)
-            logger.info("  %-15s %3d pts   x %4d .. %-4d", name, len(xs), xs[0], xs[-1])
+            span = f"{xs[0]} .. {xs[-1]}" if xs else "no points"
+            logger.info("  %-15s %3d pts   %s", name, len(xs), span)
         return 0
     except Exception:
         logger.exception("Backfill failed.")
