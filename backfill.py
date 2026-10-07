@@ -27,7 +27,7 @@ from pathlib import Path
 import gspread
 import MetaTrader5 as mt5
 
-from setup_front import CATEGORICAL, rgb
+from setup_front import rgb
 from simple_heatmap import (
     PROJECT_DIR,
     _load_credentials,
@@ -99,6 +99,21 @@ HELP_COL = 27  # AA - clear of the data and of where the charts float
 # charts sat on top of GOZ26 and GOH27 once the table grew to twelve contracts.
 CHART_COL = len(SYMBOLS) + 2  # 0-based anchor index
 assert CHART_COL < HELP_COL - 1, "price table has grown into the hidden series block"
+
+
+# Darkest first. Every shade clears 3:1 against the white chart background,
+# the floor for a 2px line - the lightest blue (#3f8ee6) is 3.4:1 and the
+# lightest yellow (#c48400) 3.2:1; anything paler disappears. The yellows are
+# amber rather than true yellow for the same reason.
+COMEX_SHADES = ["#0b2e66", "#123f80", "#1a539f", "#2368be", "#2a78d6", "#3f8ee6"]
+TFEX_SHADES = ["#6b4700", "#8a5c00", "#a86f00", "#c48400"]
+
+
+def venue_shades(ramp: list[str], n: int) -> list[str]:
+    """n shades, oldest pair palest and the newest darkest - the pair being
+    watched now is the one that should stand out. Past the ramp's length the
+    oldest pairs share its palest shade rather than wrapping round."""
+    return [ramp[min(n - 1 - i, len(ramp) - 1)] for i in range(n)]
 
 
 def a1(col: int) -> str:
@@ -274,12 +289,14 @@ def add_charts(sh, ws, names: list, grid_rows: int) -> int:
             }
         }
 
-    # Ten pairs would wrap the eight-slot palette and put two series in one
-    # colour. Colour by position within the venue instead, and tell the
-    # venues apart by line: solid COMEX, dashed TFEX.
+    # One hue per venue, so the market reads at a glance, and a shade per pair
+    # inside it, so the lines that overlap near x = 0 can still be told apart.
+    # pair_series emits COMEX pairs first, then TFEX, each oldest first.
     n_comex = len(COMEX) - 1
-    slot = [i if i < n_comex else i - n_comex for i in range(len(names))]
-    dash = ["SOLID" if i < n_comex else "MEDIUM_DASHED" for i in range(len(names))]
+    colours = (
+        venue_shades(COMEX_SHADES, n_comex)
+        + venue_shades(TFEX_SHADES, len(names) - n_comex)
+    )
 
     def chart(title, y_title, offset, anchor_row, y_range=None) -> dict:
         left = {"position": "LEFT_AXIS", "title": y_title}
@@ -294,7 +311,7 @@ def add_charts(sh, ws, names: list, grid_rows: int) -> int:
                     "spec": {
                         "title": title,
                         "subtitle": "x=0 is the near leg's first notice (COMEX) "
-                        "or last trading day (TFEX). Solid COMEX, dashed TFEX",
+                        "or last trading day (TFEX). Blue COMEX, yellow TFEX",
                         # The series columns are hidden; without this the chart
                         # reads them as absent and draws nothing.
                         "hiddenDimensionStrategy": "SHOW_ALL",
@@ -316,8 +333,8 @@ def add_charts(sh, ws, names: list, grid_rows: int) -> int:
                                 {
                                     "series": source(HELP_COL + offset + i),
                                     "targetAxis": "LEFT_AXIS",
-                                    "color": rgb(CATEGORICAL[slot[i]]),
-                                    "lineStyle": {"width": 2, "type": dash[i]},
+                                    "color": rgb(colours[i]),
+                                    "lineStyle": {"width": 2, "type": "SOLID"},
                                     "pointStyle": {"size": 3, "shape": "CIRCLE"},
                                 }
                                 for i in range(len(names))
