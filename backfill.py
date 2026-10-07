@@ -117,11 +117,33 @@ TFEX_SHADES = ["#6b4700", "#8a5c00", "#a86f00", "#c48400"]
 # reads as belonging to either venue: orange, aqua, magenta, green, violet,
 # red - the validated slots that are neither blue nor yellow.
 CROSS_COLOURS = [CATEGORICAL[i] for i in (1, 2, 4, 5, 6, 7)]
-# Matched-expiry pairs measure something else - premium, not carry - so they
-# share one neutral grey rather than taking more hues. The two never overlap
-# in time (GOH26/J26 ended in March, GOH27/J27 starts in October), so one
-# colour cannot hide one behind the other. 7.5:1 against white.
-MATCHED_COLOUR = "#555555"
+
+
+def darken(colour: str, by: float = 0.4) -> str:
+    """The same hue pulled toward black - a second shade that still reads as
+    the same family, and only gains contrast against the white background."""
+    return "#%02x%02x%02x" % tuple(
+        round(int(colour[i : i + 2], 16) * (1 - by)) for i in (1, 3, 5)
+    )
+
+
+def cross_colours(names: list[str], carry: set[str]) -> list[str]:
+    """One hue per TFEX contract, so every line on the same TFEX leg reads as
+    one family: its carry pair in the base hue, its spread-only pairs
+    (same-expiry or named extras) in a darker shade of it."""
+    tfex = [short(t) for t in TFEX]
+    out = []
+    for name in names:
+        base = CROSS_COLOURS[tfex.index(name.split(" - ")[0]) % len(CROSS_COLOURS)]
+        out.append(base if name in carry else darken(base))
+    return out
+
+
+def tfex_order(names: list[str], carry: set[str]) -> list[str]:
+    """Group the cross pairs by TFEX contract, carry pair first, so the legend
+    reads in the same families as the colours."""
+    tfex = [short(t) for t in TFEX]
+    return sorted(names, key=lambda n: (tfex.index(n.split(" - ")[0]), n not in carry, n))
 
 
 def venue_shades(ramp: list[str], n: int) -> list[str]:
@@ -310,8 +332,11 @@ def matched_series(rows: dict) -> dict:
 # not annualized and appear on the spread chart only.
 #   GOM26 - Q26   the June contract against August, from the first day Q26
 #                 has a price to the end of June (GOM26 last traded 29 Jun).
+#   GOU26 - Z26   September against December, over September (GOU26 last
+#                 traded 29 Sep).
 EXTRA_SPREADS = [
     ("F.US.GCEQ26", "GOM26", dt.date(2026, 5, 28), dt.date(2026, 6, 30)),
+    ("F.US.GCEZ26", "GOU26", dt.date(2026, 9, 1), dt.date(2026, 9, 30)),
 ]
 
 
@@ -425,8 +450,8 @@ def write_tab(ws, data_ws, rows: dict, within: dict, cross: dict) -> tuple[int, 
     return len(table) - 1, len(left), len(right)
 
 
-def add_charts(sh, ws, data_ws, within: list, cross: list, n_extra: int,
-               n_matched: int, within_rows: int, cross_rows: int) -> int:
+def add_charts(sh, ws, data_ws, within: list, cross: list, carry: set,
+               within_rows: int, cross_rows: int) -> int:
     sid = ws.id
     data_sid = data_ws.id
 
@@ -460,16 +485,13 @@ def add_charts(sh, ws, data_ws, within: list, cross: list, n_extra: int,
     }
     market = {
         "start": cross_col(len(within)), "rows": cross_rows, "n": len(cross),
-        "colours": [CROSS_COLOURS[i % len(CROSS_COLOURS)]
-                    for i in range(len(cross) - n_matched)]
-        + [MATCHED_COLOUR] * n_matched,
-        # Order is carry pairs, then extras, then matched. Only the carry pairs
-        # have a yield, so the carry chart stops short of the rest instead of
-        # listing them as empty series.
-        "pct_n": len(cross) - n_extra - n_matched,
+        "colours": cross_colours(cross, carry),
+        # Only the carry pairs have a yield, so the carry chart draws those and
+        # leaves out the rest instead of listing them as empty series.
+        "pct_idx": [i for i, n in enumerate(cross) if n in carry],
         "x_title": "Date",
-        "subtitle": "TFEX minus COMEX. Grey: same-expiry pairs, venue premium "
-                    "only. GOM26 - Q26: TFEX leg expiring first",
+        "subtitle": "TFEX minus COMEX, one colour per TFEX contract. Darker: "
+                    "spread-only pairs (same expiry, or TFEX leg expiring first)",
     }
 
     def chart(title, y_title, block, metric, anchor_row, y_range=None) -> dict:
@@ -509,8 +531,8 @@ def add_charts(sh, ws, data_ws, within: list, cross: list, n_extra: int,
                                     "lineStyle": {"width": 2, "type": "SOLID"},
                                     "pointStyle": {"size": 3, "shape": "CIRCLE"},
                                 }
-                                for i in range(block.get("pct_n", block["n"])
-                                               if metric else block["n"])
+                                for i in (block.get("pct_idx", range(block["n"]))
+                                          if metric else range(block["n"]))
                             ],
                         },
                     },
@@ -574,9 +596,10 @@ def main() -> int:
             logger.info("Using %d cached rows (--refetch to pull again).", len(rows))
 
         within = pair_series(rows)
-        extra = extra_series(rows)
-        matched = matched_series(rows)
-        cross = {**cross_series(rows), **extra, **matched}
+        carry_pairs = cross_series(rows)
+        spread_only = {**extra_series(rows), **matched_series(rows)}
+        merged = {**carry_pairs, **spread_only}
+        cross = {n: merged[n] for n in tfex_order(list(merged), set(carry_pairs))}
         series = {**within, **cross}
         sh = gspread.authorize(_load_credentials()).open_by_key(cfg["spreadsheet_id"])
         ws = sh.worksheet(TAB)
@@ -584,8 +607,8 @@ def main() -> int:
         data_ws = series_tab(sh, cross_col(len(within)) + 2 * len(cross))
 
         dates, within_rows, cross_rows = write_tab(ws, data_ws, rows, within, cross)
-        replaced = add_charts(sh, ws, data_ws, list(within), list(cross), len(extra),
-                              len(matched), within_rows, cross_rows)
+        replaced = add_charts(sh, ws, data_ws, list(within), list(cross),
+                              set(carry_pairs), within_rows, cross_rows)
 
         logger.info("%d dates x %d contracts.", dates, len(SYMBOLS))
         logger.info("%d pairs charted, %d old chart(s) replaced.", len(series), replaced)
