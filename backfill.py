@@ -27,7 +27,7 @@ from pathlib import Path
 import gspread
 import MetaTrader5 as mt5
 
-from setup_front import rgb
+from setup_front import CATEGORICAL, MIN_GAP, rgb
 from simple_heatmap import (
     PROJECT_DIR,
     _load_credentials,
@@ -113,6 +113,12 @@ COMEX_SHADES = ["#0b2e66", "#123f80", "#1a539f", "#2368be", "#2a78d6", "#3f8ee6"
 TFEX_SHADES = ["#6b4700", "#8a5c00", "#a86f00", "#c48400"]
 
 
+# Cross-market pairs take the palette's other hues, one each, so none of them
+# reads as belonging to either venue: orange, aqua, magenta, green, violet,
+# red - the validated slots that are neither blue nor yellow.
+CROSS_COLOURS = [CATEGORICAL[i] for i in (1, 2, 4, 5, 6, 7)]
+
+
 def venue_shades(ramp: list[str], n: int) -> list[str]:
     """n shades, oldest pair palest and the newest darkest - the pair being
     watched now is the one that should stand out. Past the ramp's length the
@@ -184,34 +190,61 @@ def fetch(cfg: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # Pairs
 # --------------------------------------------------------------------------- #
+def pair_points(rows: dict, near: str, far: str) -> dict:
+    """{x: (spread, yield)} for long `near`, short `far`."""
+    point = {}
+    for key in sorted(rows):
+        row = rows[key]
+        if near not in row or far not in row:
+            continue
+        day = dt.date.fromisoformat(key)
+        # Past the near leg's own expiry the pair is no longer a calendar
+        # spread - the near leg is deliverable, so what is left is a basis
+        # against the far leg and the window carry is earned over shrinks with
+        # the far leg's remaining life. Held at the fixed gap instead, a flat
+        # 4.4% market reads as a collapse to 2.4%.
+        window = (EXPIRY[far] - max(day, EXPIRY[near])).days
+        if window <= 0:
+            continue
+        spread = row[far] - row[near]
+        point[(day - EXPIRY[near]).days] = (
+            round(spread, 2),
+            round(spread / row[near] * 365 / window * 100, 3),
+        )
+    return point
+
+
 def pair_series(rows: dict) -> dict:
     """{label: {x: (spread, yield)}} for each adjacent pair inside a venue."""
-    out = {}
-    for legs in (COMEX, TFEX):
-        for near, far in zip(legs, legs[1:]):
-            point = {}
-            for key in sorted(rows):
-                row = rows[key]
-                if near not in row or far not in row:
-                    continue
-                day = dt.date.fromisoformat(key)
-                # Past the near leg's own expiry the pair is no longer a
-                # calendar spread - the near leg is deliverable, so what is
-                # left is a basis against the far leg and the window carry is
-                # earned over shrinks with the far leg's remaining life. Held
-                # at the fixed gap instead, a flat 4.4% market reads as a
-                # collapse to 2.4%.
-                window = (EXPIRY[far] - max(day, EXPIRY[near])).days
-                if window <= 0:
-                    continue
-                spread = row[far] - row[near]
-                point[(day - EXPIRY[near]).days] = (
-                    round(spread, 2),
-                    round(spread / row[near] * 365 / window * 100, 3),
-                )
-            label = f"{short(far)} - {short(near)}"
-            out[label] = point
+    return {
+        f"{short(far)} - {short(near)}": pair_points(rows, near, far)
+        for legs in (COMEX, TFEX)
+        for near, far in zip(legs, legs[1:])
+    }
+
+
+def cross_pairs() -> list[tuple[str, str]]:
+    """Each TFEX contract against the last COMEX one expiring MIN_GAP or more
+    before it - long COMEX near, short TFEX far, the same way round for all.
+
+    Not the nearest expiry: GOH26/J26 and GOH27/J27 expire a day apart, and a
+    day's gap turns a few points of venue premium into a meaningless annual
+    rate - the reason Front blanks the yield under the same seven days.
+    """
+    out = []
+    for far in TFEX:
+        cutoff = EXPIRY[far] - dt.timedelta(days=MIN_GAP)
+        before = [c for c in COMEX if EXPIRY[c] <= cutoff]
+        if before:
+            out.append((max(before, key=EXPIRY.get), far))
     return out
+
+
+def cross_series(rows: dict) -> dict:
+    return {
+        f"{short(far)} - {short(near)}": pair_points(rows, near, far)
+        for near, far in cross_pairs()
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -291,9 +324,14 @@ def write_tab(ws, data_ws, rows: dict, series: dict) -> tuple[int, int]:
     return len(table) - 1, len(grid)
 
 
-def add_charts(sh, ws, data_ws, names: list, grid_rows: int) -> int:
+def add_charts(sh, ws, data_ws, names: list, n_cross: int, grid_rows: int) -> int:
     sid = ws.id
     data_sid = data_ws.id
+
+    cross_subtitle = (
+        "Long the COMEX leg, short the TFEX leg expiring after it. "
+        "x=0 is the COMEX leg's first notice"
+    )
 
     def source(col: int) -> dict:
         return {
@@ -314,12 +352,18 @@ def add_charts(sh, ws, data_ws, names: list, grid_rows: int) -> int:
     # inside it, so the lines that overlap near x = 0 can still be told apart.
     # pair_series emits COMEX pairs first, then TFEX, each oldest first.
     n_comex = len(COMEX) - 1
+    n_within = len(names) - n_cross
     colours = (
         venue_shades(COMEX_SHADES, n_comex)
-        + venue_shades(TFEX_SHADES, len(names) - n_comex)
+        + venue_shades(TFEX_SHADES, n_within - n_comex)
+        + [CROSS_COLOURS[i % len(CROSS_COLOURS)] for i in range(n_cross)]
     )
+    within, cross = list(range(n_within)), list(range(n_within, len(names)))
+    pts, pct = 1, 1 + len(names)  # where each metric's block of columns starts
 
-    def chart(title, y_title, offset, anchor_row, y_range=None) -> dict:
+    def chart(title, y_title, offset, anchor_row, y_range=None, idx=within,
+              subtitle="x=0 is the near leg's first notice (COMEX) or last "
+                       "trading day (TFEX). Blue COMEX, yellow TFEX") -> dict:
         left = {"position": "LEFT_AXIS", "title": y_title}
         if y_range:
             left["viewWindowOptions"] = {
@@ -331,8 +375,7 @@ def add_charts(sh, ws, data_ws, names: list, grid_rows: int) -> int:
                 "chart": {
                     "spec": {
                         "title": title,
-                        "subtitle": "x=0 is the near leg's first notice (COMEX) "
-                        "or last trading day (TFEX). Blue COMEX, yellow TFEX",
+                        "subtitle": subtitle,
                         # The series sit on a hidden tab; without this the
                         # chart reads them as absent and draws nothing.
                         "hiddenDimensionStrategy": "SHOW_ALL",
@@ -358,7 +401,7 @@ def add_charts(sh, ws, data_ws, names: list, grid_rows: int) -> int:
                                     "lineStyle": {"width": 2, "type": "SOLID"},
                                     "pointStyle": {"size": 3, "shape": "CIRCLE"},
                                 }
-                                for i in range(len(names))
+                                for i in idx
                             ],
                         },
                     },
@@ -390,8 +433,12 @@ def add_charts(sh, ws, data_ws, names: list, grid_rows: int) -> int:
         {
             "requests": [
                 *({"deleteEmbeddedObject": {"objectId": c}} for c in old),
-                chart("Calendar spread", "points", 1, 1),
-                chart("Implied carry", "%/yr", 1 + len(names), 23, (0, 8)),
+                chart("Calendar spread", "points", pts, 1),
+                chart("Implied carry", "%/yr", pct, 23, (0, 8)),
+                chart("Cross-market spread", "points", pts, 45,
+                      idx=cross, subtitle=cross_subtitle),
+                chart("Cross-market implied carry", "%/yr", pct, 67, (0, 12),
+                      idx=cross, subtitle=cross_subtitle),
             ]
         }
     )
@@ -416,14 +463,15 @@ def main() -> int:
             rows = json.loads(CACHE.read_text(encoding="utf-8"))["rows"]
             logger.info("Using %d cached rows (--refetch to pull again).", len(rows))
 
-        series = pair_series(rows)
+        cross = cross_series(rows)
+        series = {**pair_series(rows), **cross}
         sh = gspread.authorize(_load_credentials()).open_by_key(cfg["spreadsheet_id"])
         ws = sh.worksheet(TAB)
 
         data_ws = series_tab(sh, 1 + 2 * len(series))
 
         dates, grid_rows = write_tab(ws, data_ws, rows, series)
-        replaced = add_charts(sh, ws, data_ws, list(series), grid_rows)
+        replaced = add_charts(sh, ws, data_ws, list(series), len(cross), grid_rows)
 
         logger.info("%d dates x %d contracts.", dates, len(SYMBOLS))
         logger.info("%d pairs charted, %d old chart(s) replaced.", len(series), replaced)
