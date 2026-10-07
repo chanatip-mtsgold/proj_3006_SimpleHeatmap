@@ -276,6 +276,19 @@ def matched_pairs() -> list[tuple[str, str]]:
     ]
 
 
+def tfex_minus_comex(rows: dict, comex: str, tfex: str, first: dt.date,
+                     last: dt.date) -> dict:
+    """{date: (TFEX - COMEX, "")} on the days both legs have a price. No yield:
+    the spread-only pairs either have no window to annualize over or run the
+    other way round from the carry pairs."""
+    return {
+        key: (round(row[tfex] - row[comex], 2), "")
+        for key, row in sorted(rows.items())
+        if tfex in row and comex in row
+        and first <= dt.date.fromisoformat(key) <= last
+    }
+
+
 def matched_series(rows: dict) -> dict:
     """{label: {date: (TFEX - COMEX, "")}} for each matched pair.
 
@@ -285,15 +298,29 @@ def matched_series(rows: dict) -> dict:
     cross pair, and stopped at the earlier expiry for the same reason they
     are. The yield is left blank: there is no window to annualize over.
     """
-    out = {}
-    for comex, tfex in matched_pairs():
-        end = min(EXPIRY[comex], EXPIRY[tfex])
-        out[f"{short(tfex)} - {short(comex)}"] = {
-            key: (round(row[tfex] - row[comex], 2), "")
-            for key, row in sorted(rows.items())
-            if tfex in row and comex in row and dt.date.fromisoformat(key) <= end
-        }
-    return out
+    return {
+        f"{short(tfex)} - {short(comex)}": tfex_minus_comex(
+            rows, comex, tfex, dt.date.min, min(EXPIRY[comex], EXPIRY[tfex]))
+        for comex, tfex in matched_pairs()
+    }
+
+
+# Spread-only cross pairs asked for by name, each over a fixed window. These
+# have the TFEX leg expiring first - the reverse of cross_pairs - so they are
+# not annualized and appear on the spread chart only.
+#   GOM26 - Q26   the June contract against August, from the first day Q26
+#                 has a price to the end of June (GOM26 last traded 29 Jun).
+EXTRA_SPREADS = [
+    ("F.US.GCEQ26", "GOM26", dt.date(2026, 5, 28), dt.date(2026, 6, 30)),
+]
+
+
+def extra_series(rows: dict) -> dict:
+    return {
+        f"{short(tfex)} - {short(comex)}": tfex_minus_comex(
+            rows, comex, tfex, first, min(last, EXPIRY[comex], EXPIRY[tfex]))
+        for comex, tfex, first, last in EXTRA_SPREADS
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -398,8 +425,8 @@ def write_tab(ws, data_ws, rows: dict, within: dict, cross: dict) -> tuple[int, 
     return len(table) - 1, len(left), len(right)
 
 
-def add_charts(sh, ws, data_ws, within: list, cross: list, n_matched: int,
-               within_rows: int, cross_rows: int) -> int:
+def add_charts(sh, ws, data_ws, within: list, cross: list, n_extra: int,
+               n_matched: int, within_rows: int, cross_rows: int) -> int:
     sid = ws.id
     data_sid = data_ws.id
 
@@ -436,13 +463,13 @@ def add_charts(sh, ws, data_ws, within: list, cross: list, n_matched: int,
         "colours": [CROSS_COLOURS[i % len(CROSS_COLOURS)]
                     for i in range(len(cross) - n_matched)]
         + [MATCHED_COLOUR] * n_matched,
-        # Matched pairs sit last and have no yield, so the carry chart stops
-        # short of them instead of listing them as empty series.
-        "pct_n": len(cross) - n_matched,
+        # Order is carry pairs, then extras, then matched. Only the carry pairs
+        # have a yield, so the carry chart stops short of the rest instead of
+        # listing them as empty series.
+        "pct_n": len(cross) - n_extra - n_matched,
         "x_title": "Date",
-        "subtitle": "TFEX minus COMEX. Colours: TFEX against the COMEX leg "
-                    "expiring before it, ending at that leg's first notice. Grey: "
-                    "same-expiry pairs, venue premium only",
+        "subtitle": "TFEX minus COMEX. Grey: same-expiry pairs, venue premium "
+                    "only. GOM26 - Q26: TFEX leg expiring first",
     }
 
     def chart(title, y_title, block, metric, anchor_row, y_range=None) -> dict:
@@ -547,8 +574,9 @@ def main() -> int:
             logger.info("Using %d cached rows (--refetch to pull again).", len(rows))
 
         within = pair_series(rows)
+        extra = extra_series(rows)
         matched = matched_series(rows)
-        cross = {**cross_series(rows), **matched}
+        cross = {**cross_series(rows), **extra, **matched}
         series = {**within, **cross}
         sh = gspread.authorize(_load_credentials()).open_by_key(cfg["spreadsheet_id"])
         ws = sh.worksheet(TAB)
@@ -556,8 +584,8 @@ def main() -> int:
         data_ws = series_tab(sh, cross_col(len(within)) + 2 * len(cross))
 
         dates, within_rows, cross_rows = write_tab(ws, data_ws, rows, within, cross)
-        replaced = add_charts(sh, ws, data_ws, list(within), list(cross), len(matched),
-                              within_rows, cross_rows)
+        replaced = add_charts(sh, ws, data_ws, list(within), list(cross), len(extra),
+                              len(matched), within_rows, cross_rows)
 
         logger.info("%d dates x %d contracts.", dates, len(SYMBOLS))
         logger.info("%d pairs charted, %d old chart(s) replaced.", len(series), replaced)
