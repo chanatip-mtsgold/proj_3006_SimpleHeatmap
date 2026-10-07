@@ -332,11 +332,11 @@ def matched_series(rows: dict) -> dict:
 # not annualized and appear on the spread chart only.
 #   GOM26 - Q26   the June contract against August, from the first day Q26
 #                 has a price to the end of June (GOM26 last traded 29 Jun).
-#   GOU26 - Z26   September against December, over September (GOU26 last
-#                 traded 29 Sep).
+#   GOU26 - Z26   September against December, over August and September
+#                 (GOU26 last traded 29 Sep).
 EXTRA_SPREADS = [
     ("F.US.GCEQ26", "GOM26", dt.date(2026, 5, 28), dt.date(2026, 6, 30)),
-    ("F.US.GCEZ26", "GOU26", dt.date(2026, 9, 1), dt.date(2026, 9, 30)),
+    ("F.US.GCEZ26", "GOU26", dt.date(2026, 8, 1), dt.date(2026, 9, 30)),
 ]
 
 
