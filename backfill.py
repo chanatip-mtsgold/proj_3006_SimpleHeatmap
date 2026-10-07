@@ -300,9 +300,9 @@ def matched_pairs() -> list[tuple[str, str]]:
 
 def tfex_minus_comex(rows: dict, comex: str, tfex: str, first: dt.date,
                      last: dt.date) -> dict:
-    """{date: (TFEX - COMEX, "")} on the days both legs have a price. No yield:
-    the spread-only pairs either have no window to annualize over or run the
-    other way round from the carry pairs."""
+    """{date: (TFEX - COMEX, "")} on the days both legs have a price. The
+    yield is left for the caller: most spread-only pairs have no window worth
+    annualizing over."""
     return {
         key: (round(row[tfex] - row[comex], 2), "")
         for key, row in sorted(rows.items())
@@ -334,18 +334,36 @@ def matched_series(rows: dict) -> dict:
 #                 has a price to the end of June (GOM26 last traded 29 Jun).
 #   GOU26 - Z26   September against December, over August and September
 #                 (GOU26 last traded 29 Sep).
+#
+# The last field puts a pair on the carry chart too. GOU26 - Z26 qualifies:
+# 62 days between GOU26's last trade and Z26's first notice is a window that
+# annualizes cleanly. Its yield is the carry of long GOU26, short Z26 - near
+# leg long, far leg short, like every other line on that chart - so it is
+# positive there while its TFEX - COMEX spread is negative.
 EXTRA_SPREADS = [
-    ("F.US.GCEQ26", "GOM26", dt.date(2026, 5, 28), dt.date(2026, 6, 30)),
-    ("F.US.GCEZ26", "GOU26", dt.date(2026, 8, 1), dt.date(2026, 9, 30)),
+    ("F.US.GCEQ26", "GOM26", dt.date(2026, 5, 28), dt.date(2026, 6, 30), False),
+    ("F.US.GCEZ26", "GOU26", dt.date(2026, 8, 1), dt.date(2026, 9, 30), True),
 ]
 
 
 def extra_series(rows: dict) -> dict:
-    return {
-        f"{short(tfex)} - {short(comex)}": tfex_minus_comex(
-            rows, comex, tfex, first, min(last, EXPIRY[comex], EXPIRY[tfex]))
-        for comex, tfex, first, last in EXTRA_SPREADS
-    }
+    out = {}
+    for comex, tfex, first, last, annualize in EXTRA_SPREADS:
+        end = min(last, EXPIRY[comex], EXPIRY[tfex])
+        spread = tfex_minus_comex(rows, comex, tfex, first, end)
+        if annualize:
+            # TFEX expires first here, so it is the near leg.
+            carry = {
+                (EXPIRY[tfex] + dt.timedelta(days=x)).isoformat(): pct
+                for x, (_, pct) in pair_points(rows, tfex, comex).items()
+            }
+            spread = {d: (pts, carry.get(d, "")) for d, (pts, _) in spread.items()}
+        out[f"{short(tfex)} - {short(comex)}"] = spread
+    return out
+
+
+def annualized_extras() -> set[str]:
+    return {f"{short(t)} - {short(c)}" for c, t, *_, annualize in EXTRA_SPREADS if annualize}
 
 
 # --------------------------------------------------------------------------- #
@@ -451,7 +469,7 @@ def write_tab(ws, data_ws, rows: dict, within: dict, cross: dict) -> tuple[int, 
 
 
 def add_charts(sh, ws, data_ws, within: list, cross: list, carry: set,
-               within_rows: int, cross_rows: int) -> int:
+               has_yield: set, within_rows: int, cross_rows: int) -> int:
     sid = ws.id
     data_sid = data_ws.id
 
@@ -488,7 +506,10 @@ def add_charts(sh, ws, data_ws, within: list, cross: list, carry: set,
         "colours": cross_colours(cross, carry),
         # Only the carry pairs have a yield, so the carry chart draws those and
         # leaves out the rest instead of listing them as empty series.
-        "pct_idx": [i for i, n in enumerate(cross) if n in carry],
+        # `carry` decides the shade (base vs dark); `has_yield` decides which
+        # lines the carry chart draws - an annualized extra keeps its dark
+        # shade so it is not mistaken for its contract's main carry pair.
+        "pct_idx": [i for i, n in enumerate(cross) if n in has_yield],
         "x_title": "Date",
         "subtitle": "TFEX minus COMEX, one colour per TFEX contract. Darker: "
                     "spread-only pairs (same expiry, or TFEX leg expiring first)",
@@ -568,8 +589,8 @@ def add_charts(sh, ws, data_ws, within: list, cross: list, carry: set,
                 chart("Implied carry", "%/yr", venue, 1, 23, (0, 8)),
                 chart("Cross-market spread", "points", market, 0, 45),
                 chart("Cross-market implied carry", "%/yr",
-                      {**market, "subtitle": "Long the COMEX leg, short the TFEX leg "
-                       "expiring after it. Each pair ends at the COMEX leg's first notice"},
+                      {**market, "subtitle": "Long the near leg, short the far leg. "
+                       "Each pair ends when its near leg stops being a forward"},
                       1, 67, (0, 12)),
             ]
         }
@@ -608,7 +629,8 @@ def main() -> int:
 
         dates, within_rows, cross_rows = write_tab(ws, data_ws, rows, within, cross)
         replaced = add_charts(sh, ws, data_ws, list(within), list(cross),
-                              set(carry_pairs), within_rows, cross_rows)
+                              set(carry_pairs), set(carry_pairs) | annualized_extras(),
+                              within_rows, cross_rows)
 
         logger.info("%d dates x %d contracts.", dates, len(SYMBOLS))
         logger.info("%d pairs charted, %d old chart(s) replaced.", len(series), replaced)
