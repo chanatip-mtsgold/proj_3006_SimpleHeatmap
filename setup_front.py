@@ -121,6 +121,7 @@ NEUTRAL = "#f0efec"
 # meaning anything: dividing by a one-day gap turned a $3.80 venue difference
 # between GCV6 and GOU26 into -32%/yr. Those cells drop the yield and go grey.
 MIN_GAP = 7
+DAY_COUNT = 360  # days in the annualizing year; see parts()
 SUPPRESSED = "#dcdbd6"  # distinctly greyer than NEUTRAL so it is not read as zero
 
 # The band was +/-4% to +/-8% until the history showed where the yields
@@ -204,6 +205,12 @@ def parts(row: int, col: str) -> dict:
     # contracts sharing an expiry would otherwise raise #DIV/0! and take the
     # spread down with it.
     safe_gap = f"IF(ABS({gap})>={MIN_GAP},{gap},1)"
+    # Trial, 2026-10-09: the yield is annualized over the days left to the FAR
+    # leg's expiry - the whole time the position is held to convergence -
+    # instead of over the gap between the expiries. The gap still decides
+    # which cells are suppressed. Revert this commit to go back to the gap.
+    far = f'IF({tx}="",{dy},MAX({tx},{ty})-{today})'
+    safe_far = f"MAX({far},1)"
     return {
         # Two guards, applied as nested IFs rather than one OR. OR evaluates
         # every argument, so folding the price checks in with the name checks
@@ -219,11 +226,15 @@ def parts(row: int, col: str) -> dict:
         "unpriced": f"OR({y_bid}<=0,{x_ask}<=0)",
         "tx": tx,
         "gap": gap,
+        "far": far,
         "spread": f"({y_bid}-{x_ask})",
         # Days shown is the NEAR leg's time left - that is what forces the
         # position to be unwound - which is not the yield's denominator.
         "days": f'IF({tx}="",{dy},MIN({tx}-{today},{dy}))',
-        "pct": f"(({y_bid}/{x_ask})-1)*365/{safe_gap}",
+        # ACT/360, the money-market convention for USD rates, so a cell can be
+        # set against a SOFR or deposit quote without converting. Was ACT/365
+        # until 2026-10-09; the difference is a flat x 365/360 (about 1.4%).
+        "pct": f"(({y_bid}/{x_ask})-1)*{DAY_COUNT}/{safe_far}",
     }
 
 
@@ -294,7 +305,7 @@ def curve_block(front, cols: list[str]) -> None:
                     # ABS: a negative gap only means the column leg expires
                     # first, which is an artefact of where a pair sits in the
                     # triangle. The window's length is what belongs on the axis.
-                    f'=IF({p["unnamed"]},"",IFERROR(ABS({p["gap"]}),""))',
+                    f'=IF({p["unnamed"]},"",IFERROR({p["far"]},""))',
                     # The mirror already holds this pair's yield, blanked when
                     # the gap is too short - reuse it rather than recompute.
                     f"={mirror[j - 1]}{row}",

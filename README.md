@@ -41,7 +41,8 @@ Sheet: `1MmAn7aVFIdReaMZgxoN-thw-LMtBFna4B5qCKI8kNpU`
 
 ```
 spread = Y_BID - X_ASK                          ขาย Y ซื้อ X
-yield  = (Y_BID / X_ASK - 1) × 365 / gap        implied forward carry
+yield  = (Y_BID / X_ASK - 1) × 360 / far        ACT/360 (ทดลอง ตั้งแต่ 2026-10-09)
+far    = วันถึง TTM ของขาที่หมดอายุช้ากว่า         นับจากวันที่ snapshot
 gap    = TTM_Y - TTM_X                          spot นับ TTM = วันที่ snapshot
 ```
 

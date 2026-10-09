@@ -27,6 +27,7 @@ from setup_front import (
     CATEGORICAL,
     FULL_COLOUR,
     GREY_BAND,
+    DAY_COUNT,
     MIN_GAP,
     NEUTRAL,
     RAMP_DOWN,
@@ -79,6 +80,7 @@ class Pair:
     spread: float
     gap: int  # days between the two expiries; signed
     near_days: int  # time left on whichever leg expires first
+    far_days: int  # time left on whichever leg expires last - the yield's term
     yld: float | None  # None once the gap is too short to annualise
 
     @property
@@ -125,11 +127,12 @@ def read_sheet(cfg: dict) -> tuple[list[Leg], list[tuple[date, dict[str, Quote]]
     return legs, history
 
 
-def annualised(y_bid: float, x_ask: float, gap: int) -> float | None:
-    """Implied forward carry. None when the window is too short to mean anything."""
+def annualised(y_bid: float, x_ask: float, gap: int, far_days: int) -> float | None:
+    """Yield over the days left to the far leg. None when the two expiries are
+    too close together - the same suppression rule as Front."""
     if abs(gap) < MIN_GAP:
         return None
-    return (y_bid / x_ask - 1) * 365 / gap
+    return (y_bid / x_ask - 1) * DAY_COUNT / max(far_days, 1)
 
 
 def build_pairs(legs: list[Leg], when: date, quotes: dict[str, Quote]) -> list[Pair]:
@@ -143,6 +146,7 @@ def build_pairs(legs: list[Leg], when: date, quotes: dict[str, Quote]) -> list[P
             tx = x.ttm or when
             ty = y.ttm or when
             gap = (ty - tx).days
+            far_days = (max(tx, ty) - when).days
             spread = quotes[y.name].bid - quotes[x.name].ask
             out.append(
                 Pair(
@@ -153,7 +157,8 @@ def build_pairs(legs: list[Leg], when: date, quotes: dict[str, Quote]) -> list[P
                     near_days=min((t - when).days for t in (tx, ty) if t != when)
                     if (tx != when or ty != when)
                     else 0,
-                    yld=annualised(quotes[y.name].bid, quotes[x.name].ask, gap),
+                    far_days=far_days,
+                    yld=annualised(quotes[y.name].bid, quotes[x.name].ask, gap, far_days),
                 )
             )
     return out
@@ -278,7 +283,7 @@ def scatter(pairs: list[Pair]) -> go.Figure:
         sel = [p for p in pairs if p.venue_class == cls and p.yld is not None]
         fig.add_trace(
             go.Scatter(
-                x=[abs(p.gap) for p in sel],
+                x=[p.far_days for p in sel],
                 y=[p.yld * 100 for p in sel],
                 mode="markers",
                 name=name,
@@ -384,7 +389,7 @@ def render(legs: list[Leg], history: list, snap: tuple | None = None) -> str:
       &middot; {len(legs)} legs, {len(pairs)} pairs</div>
     <div class="formula">
       spread = Y<sub>bid</sub> &minus; X<sub>ask</sub> &nbsp;(sell Y, buy X)<br>
-      yield&nbsp; = (Y<sub>bid</sub> / X<sub>ask</sub> &minus; 1) &times; 365 / gap
+      yield&nbsp; = (Y<sub>bid</sub> / X<sub>ask</sub> &minus; 1) &times; 360 / days to the far leg
       &nbsp;&nbsp;gap = TTM<sub>Y</sub> &minus; TTM<sub>X</sub>, spot counted as
       expiring on the snapshot date
     </div>
