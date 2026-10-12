@@ -48,7 +48,9 @@ CHAT_TOKEN = os.path.join(GITHUB_DIR, ".cred", "token.json")
 GRID_SPAN = sf.SPAN + 1
 
 TFEX_RE = re.compile(r"^GO[A-Z]\d\d$")
-CELL_RE = re.compile(r"(?:([\d.]+)%\s*)?\(([-+]?[\d.]+)\)\s*\((\d+)d\)")
+# The yield can be negative - a pair whose column leg expires first reads
+# below zero - so the sign is part of the number, as it is for the spread.
+CELL_RE = re.compile(r"(?:(-?[\d.]+)%\s*)?\(([-+]?[\d.]+)\)\s*\((\d+)d\)")
 
 CROSS_EDGE = "#1a2a4a"
 INK, MUTED, FAINT, PAGE = "#1a1a1a", "#6b6b70", "#8a8a8f", "#ffffff"
