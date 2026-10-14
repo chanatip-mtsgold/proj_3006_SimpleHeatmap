@@ -35,8 +35,26 @@ DATA = "Data"
 MAX_LEGS = 12
 SPAN = MAX_LEGS - 1
 FIRST_ROW = 2
-LAST_ROW = FIRST_ROW + SPAN - 1  # 12
+# The spot row is followed by the same row net of the XAUUSD swap, so every
+# leg after spot sits one row lower than its position in ALL_LEGS suggests.
+NET_ROW = FIRST_ROW + 1  # 3
+LAST_ROW = FIRST_ROW + SPAN  # 13: SPAN leg rows plus the net row
 COLOUR_OFFSET = 14  # B -> P
+
+# The swap the net row deducts: USD per oz per calendar day, averaged over the
+# rolls in the Swap tab whose TOM falls in the 30 calendar days up to the
+# snapshot. Points over days, not an average of rows, because a roll across a
+# weekend or holiday carries several days' worth in one line.
+SWAP_TAB = "Swap"
+SWAP_WINDOW = 30
+SWAP_ROW = LAST_ROW + 1  # 14, label in A, value in B - visible under the matrix
+SWAP_CELL = f"$B${SWAP_ROW}"
+NET_PREFIX = "net "  # the net row reads "net XAUUSD": spot's name, broker suffix dropped
+
+
+def leg_row(i: int) -> int:
+    """Sheet row of the i-th leg of ALL_LEGS (1-based); the net row is skipped."""
+    return FIRST_ROW if i == 1 else FIRST_ROW + i
 
 # Chart scaffolding, in the hidden columns below the mirror. One row per pair
 # in the triangle, so no sorting is needed - these are points, not lines.
@@ -224,6 +242,7 @@ def parts(row: int, col: str) -> dict:
         "unpriced": f"OR({y_bid}<=0,{x_ask}<=0)",
         "tx": tx,
         "far": far,
+        "x_ask": x_ask,
         "spread": f"({y_bid}-{x_ask})",
         # Days shown is the FAR leg's time left - the same number the yield is
         # divided by, so spread / days x 360 / price reproduces the cell. It used
@@ -261,6 +280,43 @@ def value_cell(row: int, col: str) -> str:
     )
 
 
+def swap_formula() -> str:
+    """USD/oz/day: summed ASK points over summed days, for rolls with TOM in
+    (snapshot - SWAP_WINDOW, snapshot]. DC106 quotes points in cents."""
+    when = f"INT($A$1)"
+    rng = (f'{SWAP_TAB}!$C:$C,">"&({when}-{SWAP_WINDOW}),'
+           f'{SWAP_TAB}!$C:$C,"<="&{when}')
+    return (f"=IFERROR(SUMIFS({SWAP_TAB}!$G:$G,{rng})"
+            f"/SUMIFS({SWAP_TAB}!$E:$E,{rng})/100,\"\")")
+
+
+def net_parts(col: str) -> dict:
+    """The spot row's pair against `col`, with the swap held to the far leg's
+    expiry taken off the spread. Same denominator as every other cell."""
+    p = parts(FIRST_ROW, col)
+    spread = f'({p["spread"]}-{SWAP_CELL}*{p["far"]})'
+    return {
+        **p,
+        "spread": spread,
+        "pct": f'({spread}/{p["x_ask"]})*{DAY_COUNT}/MAX({p["far"]},1)',
+        "no_swap": f'{SWAP_CELL}=""',
+    }
+
+
+def net_text_cell(col: str) -> str:
+    p = net_parts(col)
+    body = (f'TEXT({p["pct"]},"0.00%")&" ("&TEXT({p["spread"]},"+0.00;-0.00")'
+            f'&") ("&{p["days"]}&"d)"')
+    return (f'=IF({p["unnamed"]},"",IF({p["unpriced"]},"",'
+            f'IF({p["no_swap"]},"",IFERROR({body},""))))')
+
+
+def net_value_cell(col: str) -> str:
+    p = net_parts(col)
+    return (f'=IF({p["unnamed"]},"",IF({p["unpriced"]},"",'
+            f'IF({p["no_swap"]},"",IFERROR({p["pct"]},""))))')
+
+
 def venue(name: str) -> str:
     """1 for an exchange-prefixed contract, 0 for a bare TFEX one.
 
@@ -284,8 +340,10 @@ def curve_block(front, cols: list[str]) -> None:
     mirror = [col_letter(2 + COLOUR_OFFSET + j) for j in range(SPAN)]
 
     raw = []
+    # Leg rows only: the net row is a cost-adjusted view of the spot row, not
+    # a pair of its own, so it stays off the term-structure scatter.
     for i in range(1, SPAN + 1):
-        row = FIRST_ROW + i - 1
+        row = leg_row(i)
         for j in range(i, SPAN + 1):
             col = cols[j - 1]
             p = parts(row, col)
@@ -462,22 +520,41 @@ def build(front) -> None:
         value_input_option="USER_ENTERED",
     )
     # The final leg never labels a row: nothing sits after it to pair against.
-    row_label = (
-        f'=IFERROR(IF(ROW()-1>=COLUMNS({ALL_LEGS}),"",INDEX({ALL_LEGS},1,ROW()-1)),"")'
+    # Leg rows below the net row are one further down, hence ROW()-2.
+    def label(k: int) -> str:
+        return (f'=IFERROR(IF({k}>=COLUMNS({ALL_LEGS}),"",'
+                f'INDEX({ALL_LEGS},1,{k})),"")')
+
+    net_label = (f'=IF(A{FIRST_ROW}="","",'
+                 f'"{NET_PREFIX}"&REGEXREPLACE(A{FIRST_ROW},"\\.[a-z]+$",""))')
+    labels = [[label(1)], [net_label]]
+    labels += [[label("ROW()-2")] for _ in range(SPAN - 1)]
+    front.update(
+        labels,
+        range_name=f"A{FIRST_ROW}:A{LAST_ROW}",
+        value_input_option="USER_ENTERED",
     )
     front.update(
-        [[row_label] for _ in range(SPAN)],
-        range_name=f"A{FIRST_ROW}:A{LAST_ROW}",
+        # The same swap two ways: points per day (USD/oz, the unit the spreads
+        # are in) and that rate a year over the spot price, on the matrix's
+        # 360-day basis so it can be read against the spot row directly.
+        [["Swap XAUUSD (30d avg)", swap_formula(),
+          f'=IFERROR({SWAP_CELL}*{DAY_COUNT}/{parts(FIRST_ROW, "B")["x_ask"]},"")']],
+        range_name=f"A{SWAP_ROW}:C{SWAP_ROW}",
         value_input_option="USER_ENTERED",
     )
 
     # Upper triangle only: the cell at row leg i, column leg j+1 exists when
     # j >= i. Masked cells are written blank rather than left to a formula.
+    # The net row follows the spot row and, like it, spans every column.
     text, mirror = [], []
     for i in range(1, SPAN + 1):
-        row = FIRST_ROW + i - 1
+        row = leg_row(i)
         text.append(["" if j < i else text_cell(row, cols[j - 1]) for j in range(1, SPAN + 1)])
         mirror.append(["" if j < i else value_cell(row, cols[j - 1]) for j in range(1, SPAN + 1)])
+        if i == 1:
+            text.append([net_text_cell(c) for c in cols])
+            mirror.append([net_value_cell(c) for c in cols])
 
     front.update(
         text,
@@ -510,6 +587,11 @@ def style(front) -> None:
         f"B{FIRST_ROW}:{last_col}{LAST_ROW}", {"horizontalAlignment": "CENTER"}
     )
     front.freeze(rows=1, cols=1)
+    front.format(f"B{SWAP_ROW}",
+                 {"numberFormat": {"type": "NUMBER", "pattern": '0.000" pt/day"'}})
+    front.format(f"C{SWAP_ROW}",
+                 {"numberFormat": {"type": "NUMBER", "pattern": '0.00%" /yr"'}})
+    front.format(f"A{NET_ROW}", {"textFormat": {"bold": True, "italic": True}})
 
     meta = front.spreadsheet.fetch_sheet_metadata(
         {"fields": "sheets(properties/sheetId,conditionalFormats)"}

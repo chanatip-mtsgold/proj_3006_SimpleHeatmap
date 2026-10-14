@@ -390,6 +390,75 @@ def append_rows(ws, rows: list[list]) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Swap
+# --------------------------------------------------------------------------- #
+# The daily XAUUSD tom-next swap, copied from the DC106 table into this file so
+# Front can net it off the spot row with a plain SUMIFS, and so the history
+# stays here even if a row is later edited or removed at the source.
+SWAP_TAB = "Swap"
+SWAP_HEADER = ["Date", "Time", "TOM", "NEXT", "Days", "XAU bid", "XAU ask"]
+_SHEETS_EPOCH = date(1899, 12, 30)
+
+
+def _swap_source(raw: list[list[str]]) -> dict[str, list]:
+    """{TOM iso: row} from DC106 A3:F. One roll covers TOM..NEXT, which spans a
+    weekend or holiday on some days - Days carries that, so a per-day rate is a
+    sum of points over a sum of days rather than an average of rows."""
+    out = {}
+    for r in raw:
+        r = r + [""] * (6 - len(r))
+        try:
+            traded = datetime.strptime(r[0].strip(), "%y-%m-%d").date()
+            tom = datetime.strptime(r[2].strip(), "%d/%m/%Y").date()
+            nxt = datetime.strptime(r[3].strip(), "%d/%m/%Y").date()
+            bid, ask = float(r[4]), float(r[5])
+        except ValueError:
+            continue  # blank or malformed line
+        out[tom.isoformat()] = [traded.isoformat(), "'" + r[1].strip(), tom.isoformat(),
+                                nxt.isoformat(), (nxt - tom).days, bid, ask]
+    return out
+
+
+def _swap_held(dst) -> dict[str, list]:
+    """The Swap tab as it stands, in the same shape _swap_source returns."""
+    def iso(v):
+        return (_SHEETS_EPOCH + timedelta(days=int(v))).isoformat() if isinstance(v, (int, float)) else str(v)
+
+    out = {}
+    for r in dst.get("A2:G", value_render_option="UNFORMATTED_VALUE"):
+        r = r + [""] * (7 - len(r))
+        if r[2] == "":
+            continue
+        row = [iso(r[0]), "'" + str(r[1]), iso(r[2]), iso(r[3]), r[4], r[5], r[6]]
+        out[row[2]] = row
+    return out
+
+
+def sync_swap(cfg: dict, book) -> None:
+    """Merge DC106 into the Swap tab: new rolls added, changed ones updated,
+    rolls no longer at the source kept. Failure is logged, never raised - the
+    prices matter more than the swap."""
+    src_id = cfg.get("swap_spreadsheet_id")
+    if not src_id:
+        return
+    try:
+        source = _swap_source(sheets_client().open_by_key(src_id).sheet1.get("A3:F"))
+        try:
+            dst = book.worksheet(SWAP_TAB)
+        except gspread.WorksheetNotFound:
+            dst = book.add_worksheet(SWAP_TAB, rows=1000, cols=len(SWAP_HEADER))
+        held = _swap_held(dst)
+        merged = {**held, **source}
+        rows = [merged[k] for k in sorted(merged)]
+        dst.update(values=[SWAP_HEADER] + rows, range_name=f"A1:G{len(rows) + 1}",
+                   value_input_option="USER_ENTERED")
+        logger.info("Swap: %d rolls held, %d new from DC106 (latest TOM %s).",
+                    len(rows), len(set(source) - set(held)), max(merged) if merged else "-")
+    except Exception:
+        logger.exception("Swap sync failed; Front keeps the swap it already has.")
+
+
+# --------------------------------------------------------------------------- #
 def report_latest(cfg: dict, ws, legs, slot) -> None:
     """Post the newest slot to Chat. Front only ever shows the last row, so
     back-filling several slots at once still produces one report, for the last.
@@ -450,6 +519,8 @@ def main() -> int:
 
     try:
         ws = get_worksheet(cfg)
+        if not args.dry_run:
+            sync_swap(cfg, ws.spreadsheet)
 
         # parse_header rather than read_layout: the report needs the TTMs to
         # tell a contract that has rolled off from one that simply failed.

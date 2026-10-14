@@ -44,8 +44,10 @@ SPACE_KEY = "HeatmapSpace"
 # authorized_user.json does not carry — token.json is the one that does.
 CHAT_TOKEN = os.path.join(GITHUB_DIR, ".cred", "token.json")
 
-# The corner cell plus one row and one column per leg.
+# The corner cell plus one column per leg; rows run to Front's last row, which
+# includes the spot row's net-of-swap twin.
 GRID_SPAN = sf.SPAN + 1
+GRID_ROWS = sf.LAST_ROW
 
 TFEX_RE = re.compile(r"^GO[A-Z]\d\d$")
 # The yield can be negative - a pair whose column leg expires first reads
@@ -70,9 +72,9 @@ def read_front(spreadsheet) -> list[list[str]]:
     """The triangle as displayed, trimmed to the legs that are actually there."""
     ws = spreadsheet.worksheet(FRONT)
     last = sf.col_letter(1 + sf.SPAN)
-    rows = ws.get(f"A1:{last}{sf.FIRST_ROW + sf.SPAN - 1}")
+    rows = ws.get(f"A1:{last}{GRID_ROWS}")
     rows = [r + [""] * (GRID_SPAN - len(r)) for r in rows]
-    rows += [[""] * GRID_SPAN for _ in range(GRID_SPAN - len(rows))]
+    rows += [[""] * GRID_SPAN for _ in range(GRID_ROWS - len(rows))]
 
     # Keep a column or row only if at least one of its cells is priced. That
     # drops Front's unused tail (it is built out to MAX_LEGS) and also a leg
@@ -80,15 +82,25 @@ def read_front(spreadsheet) -> list[list[str]]:
     # a report it would only be an empty stripe.
     keep_cols = [
         j for j in range(1, GRID_SPAN)
-        if rows[0][j].strip() and any(rows[i][j].strip() for i in range(1, GRID_SPAN))
+        if rows[0][j].strip() and any(rows[i][j].strip() for i in range(1, GRID_ROWS))
     ]
     keep_rows = [
-        i for i in range(1, GRID_SPAN)
+        i for i in range(1, GRID_ROWS)
         if rows[i][0].strip() and any(rows[i][j].strip() for j in keep_cols)
     ]
     header = [rows[0][0]] + [rows[0][j] for j in keep_cols]
     body = [[rows[i][0]] + [rows[i][j] for j in keep_cols] for i in keep_rows]
     return [header] + body
+
+
+def read_swap(spreadsheet) -> tuple[float, float] | None:
+    """The swap Front's net row deducted: (points per day, fraction per year)."""
+    got = spreadsheet.worksheet(FRONT).get(f"B{sf.SWAP_ROW}:C{sf.SWAP_ROW}",
+                                           value_render_option="UNFORMATTED_VALUE")
+    vals = (got[0] + ["", ""])[:2] if got else ["", ""]
+    if all(isinstance(v, (int, float)) for v in vals):
+        return float(vals[0]), float(vals[1])
+    return None
 
 
 def read_prices(spreadsheet) -> dict[str, tuple[str, str]]:
@@ -130,7 +142,7 @@ def shade(yld: float | None) -> str:
 
 
 CELL_W, CELL_H = 1.0, 0.62
-HDR_W = 1.40  # row labels plus the LONG bar beside them
+HDR_W = 1.65  # row labels plus the LONG bar; wide enough for the swap note
 PAD_X, FOOT_H = 0.28, 1.15
 TOP_H = 1.45  # title, scale key, column labels + bid, and the SHORT bar
 
@@ -147,13 +159,17 @@ MIN_FIG_W = 7.4
 
 
 def render(grid: list[list[str]], path: str,
-           prices: dict[str, tuple[str, str]] | None = None) -> str:
+           prices: dict[str, tuple[str, str]] | None = None,
+           swap: tuple[float, float] | None = None) -> str:
     stamp = grid[0][0]
     prices = prices or {}
     col_keys, row_keys = grid[0][1:], [r[0] for r in grid[1:]]
     cols = [c.replace("CMX.", "") for c in col_keys]
     rows = [r.replace("CMX.", "") for r in row_keys]
-    col_venue, row_venue = [venue(c) for c in cols], [venue(r) for r in rows]
+    # The net row is spot with a cost taken off, so it is spot for venue
+    # purposes even though its label no longer starts with XAU.
+    col_venue = [venue(c) for c in cols]
+    row_venue = ["SPOT" if r.startswith(sf.NET_PREFIX) else venue(r) for r in row_keys]
 
     x0 = PAD_X + HDR_W
     # Width is built up from the parts rather than scaled, so the right-hand
@@ -192,10 +208,14 @@ def render(grid: list[list[str]], path: str,
         y = top - (i + 1) * CELL_H
         lx = x0 - BAR_GAP - BAR - 0.10
         ask = prices.get(row_keys[i], ("", ""))[1]
-        ax.text(lx, y + CELL_H / 2 + (0.10 if ask else 0), name, fontsize=9.5,
+        # The net row has no price of its own; it shows the swap it deducted.
+        note = ("ask " + ask) if ask else ""
+        if row_keys[i].startswith(sf.NET_PREFIX) and swap is not None:
+            note = f"{swap[0]:.3f} pt/d · {swap[1] * 100:.2f}%/yr"
+        ax.text(lx, y + CELL_H / 2 + (0.10 if note else 0), name, fontsize=9.5,
                 fontweight="bold", color=INK, ha="right", va="center")
-        if ask:
-            ax.text(lx, y + CELL_H / 2 - 0.13, "ask " + ask, fontsize=7.8,
+        if note:
+            ax.text(lx, y + CELL_H / 2 - 0.13, note, fontsize=7.8,
                     color=MUTED, ha="right", va="center")
         for j in range(len(cols)):
             cross = (row_venue[i] != col_venue[j]
@@ -370,7 +390,7 @@ def send(spreadsheet, missing: list[str], stamp: str, out_dir: str) -> bool:
         return True
 
     png = os.path.join(out_dir, "front.png")
-    render(read_front(spreadsheet), png, read_prices(spreadsheet))
+    render(read_front(spreadsheet), png, read_prices(spreadsheet), read_swap(spreadsheet))
     logger.info("Posted %s to spaces/%s.", post(space, f"*Gold carry* — Front, {stamp}", png),
                 space)
     return True
@@ -389,7 +409,7 @@ def main() -> int:
         book = sheets_client().open_by_key(cfg["spreadsheet_id"])
         grid = read_front(book)
         if args.out:
-            logger.info("Wrote %s.", render(grid, args.out, read_prices(book)))
+            logger.info("Wrote %s.", render(grid, args.out, read_prices(book), read_swap(book)))
             return 0
         send(book, [], grid[0][0], os.path.dirname(os.path.abspath(__file__)))
         return 0
