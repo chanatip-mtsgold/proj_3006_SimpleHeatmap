@@ -197,18 +197,16 @@ def parts(row: int, col: str) -> dict:
     x_ask = f"INDEX({DATA}!$A:$CA,{dr},{cx}+1)"
     y_bid = f"INDEX({DATA}!$A:$CA,{dr},{cy})"
     dy = f"({ty}-{today})"
-    # The carry window the yield is earned over is the distance between the two
-    # expiries, not the time left on either leg. Spot behaves as a leg expiring
-    # on the snapshot date, which makes the spot row fall out of the same rule.
-    gap = f'IF({tx}="",{dy},{ty}-{tx})'
-    # Never divide by a gap we are going to suppress anyway - a pair of
-    # contracts sharing an expiry would otherwise raise #DIV/0! and take the
-    # spread down with it.
-    safe_gap = f"IF(ABS({gap})>={MIN_GAP},{gap},1)"
-    # Trial, 2026-10-09: the yield is annualized over the days left to the FAR
-    # leg's expiry - the whole time the position is held to convergence -
-    # instead of over the gap between the expiries. The gap still decides
-    # which cells are suppressed. Revert this commit to go back to the gap.
+    # The yield is annualized over the days left to the FAR leg's expiry - the
+    # whole time the position is held to convergence (since 2026-10-09; it was
+    # the gap between the two expiries). Spot behaves as a leg expiring on the
+    # snapshot date, so on the spot row this is just the contract's days left.
+    #
+    # Nothing is suppressed any more. Under the gap a pair a day apart, like
+    # GOH27 / CMX.GCJ27, divided a few points of venue premium by one day and
+    # read hundreds of percent; over the far leg's ~170 days it reads normally.
+    # ROLL_OFF_DAYS keeps every live leg at least that far from expiry, so the
+    # denominator never gets small.
     far = f'IF({tx}="",{dy},MAX({tx},{ty})-{today})'
     safe_far = f"MAX({far},1)"
     return {
@@ -225,7 +223,6 @@ def parts(row: int, col: str) -> dict:
         # are there, so requiring that is the test.
         "unpriced": f"OR({y_bid}<=0,{x_ask}<=0)",
         "tx": tx,
-        "gap": gap,
         "far": far,
         "spread": f"({y_bid}-{x_ask})",
         # Days shown is the FAR leg's time left - the same number the yield is
@@ -241,7 +238,7 @@ def parts(row: int, col: str) -> dict:
 
 def text_cell(row: int, col: str) -> str:
     p = parts(row, col)
-    pct = f'IF(ABS({p["gap"]})>={MIN_GAP},TEXT({p["pct"]},"0.00%")&" ","")'
+    pct = f'TEXT({p["pct"]},"0.00%")&" "'
     body = f'{pct}&"("&TEXT({p["spread"]},"+0.00;-0.00")&") ("&{p["days"]}&"d)"'
     return (
         f'=IF({p["unnamed"]},"",'
@@ -252,15 +249,15 @@ def text_cell(row: int, col: str) -> str:
 def value_cell(row: int, col: str) -> str:
     """The numeric mirror: the yield, which is what the colour keys off.
 
-    Left blank for a suppressed cell, which is what the grey rule keys off -
-    no third grid needed, and the sheet stays inside its 26 columns. The chart
-    block reads its y-values straight out of here rather than recomputing them.
+    The chart block reads its y-values straight out of here rather than
+    recomputing them. The grey "suppressed" rule keys off a blank mirror next
+    to a written cell; with nothing suppressed it no longer fires, but is left
+    in place in case a cell's yield ever fails to compute.
     """
     p = parts(row, col)
-    live = f'IF(ABS({p["gap"]})<{MIN_GAP},"",{p["pct"]})'
     return (
         f'=IF({p["unnamed"]},"",'
-        f'IF({p["unpriced"]},"",IFERROR({live},"")))'
+        f'IF({p["unpriced"]},"",IFERROR({p["pct"]},"")))'
     )
 
 

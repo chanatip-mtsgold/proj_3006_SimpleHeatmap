@@ -28,7 +28,6 @@ from setup_front import (
     FULL_COLOUR,
     GREY_BAND,
     DAY_COUNT,
-    MIN_GAP,
     NEUTRAL,
     RAMP_DOWN,
     RAMP_UP,
@@ -128,10 +127,8 @@ def read_sheet(cfg: dict) -> tuple[list[Leg], list[tuple[date, dict[str, Quote]]
 
 
 def annualised(y_bid: float, x_ask: float, gap: int, far_days: int) -> float | None:
-    """Yield over the days left to the far leg. None when the two expiries are
-    too close together - the same suppression rule as Front."""
-    if abs(gap) < MIN_GAP:
-        return None
+    """Yield over the days left to the far leg - the same rule as Front, which
+    no longer suppresses pairs whose expiries are close together."""
     return (y_bid / x_ask - 1) * DAY_COUNT / max(far_days, 1)
 
 
@@ -268,12 +265,9 @@ def render_matrix(legs: list[Leg], pairs: list[Pair]) -> str:
 <tbody>{"".join(body)}</tbody></table>
 <div class="swatches"><span>-9%</span>{legend}<span>+9%</span></div>
 <div class="note">
-  Cell = <b>yield</b> over the gap between the two expiries, then the dollar
-  spread and the days left on the nearer leg. That day count is <b>not</b> the
-  yield's denominator &mdash; the two agree only on the spot row.<br>
-  Grey <span style="background:{SUPPRESSED};padding:1px 6px;border-radius:3px">
-  &mdash;</span> means the two expiries are under {MIN_GAP} days apart, where
-  annualising turns a venue difference into a nonsense rate.
+  Cell = <b>yield</b> over the days left to the farther leg, then the dollar
+  spread and that same day count &mdash; spread / price &times; 360 / days gives
+  the yield back.
 </div></div>"""
 
 

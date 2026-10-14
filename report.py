@@ -131,7 +131,7 @@ def shade(yld: float | None) -> str:
 
 CELL_W, CELL_H = 1.0, 0.62
 HDR_W = 1.40  # row labels plus the LONG bar beside them
-PAD_X, FOOT_H = 0.28, 1.40
+PAD_X, FOOT_H = 0.28, 1.15
 TOP_H = 1.45  # title, scale key, column labels + bid, and the SHORT bar
 
 # Every cell is Y_BID - X_ASK: buy the row leg, sell the column leg. The bars
@@ -280,10 +280,6 @@ def _footnotes(ax, fy: float) -> None:
     ax.text(PAD_X + 0.34, fy - 0.465,
             "outlined = COMEX leg against TFEX leg (cross-market)",
             fontsize=8.6, color=MUTED, va="center")
-    ax.text(PAD_X, fy - 0.70,
-            f"grey = the two legs expire under {sf.MIN_GAP} days apart, "
-            "so the yield is not annualizable",
-            fontsize=8.6, color=FAINT, va="center")
 
 
 # --------------------------------------------------------------------------- #
