@@ -273,7 +273,7 @@ def _scale_key(ax, fig_w: float, fig_h: float) -> None:
 def _footnotes(ax, fy: float) -> None:
     ax.text(PAD_X, fy, "each cell = buy the row leg, sell the column leg; yield is that spread annualized",
             fontsize=8.6, color=MUTED, va="center")
-    ax.text(PAD_X, fy - 0.22, "yield  /  spread (points)  /  days to the nearer expiry",
+    ax.text(PAD_X, fy - 0.22, "yield  /  spread (points)  /  days to the farther expiry",
             fontsize=8.6, color=MUTED, va="center")
     ax.add_patch(Rectangle((PAD_X + 0.02, fy - 0.53), 0.22, 0.13, facecolor="none",
                            edgecolor=CROSS_EDGE, lw=1.8))

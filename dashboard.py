@@ -255,7 +255,7 @@ def render_matrix(legs: list[Leg], pairs: list[Pair]) -> str:
             top = "&mdash;" if p.yld is None else f"{p.yld * 100:.2f}%"
             cells.append(
                 f'<td style="background:{shade(p.yld)}">{top}'
-                f'<div class="sub">{p.spread:+.2f} &middot; {p.near_days}d</div></td>'
+                f'<div class="sub">{p.spread:+.2f} &middot; {p.far_days}d</div></td>'
             )
         body.append(f'<tr><th class="row">{r}</th>{"".join(cells)}</tr>')
 

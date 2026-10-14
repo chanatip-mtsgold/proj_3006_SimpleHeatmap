@@ -228,9 +228,10 @@ def parts(row: int, col: str) -> dict:
         "gap": gap,
         "far": far,
         "spread": f"({y_bid}-{x_ask})",
-        # Days shown is the NEAR leg's time left - that is what forces the
-        # position to be unwound - which is not the yield's denominator.
-        "days": f'IF({tx}="",{dy},MIN({tx}-{today},{dy}))',
+        # Days shown is the FAR leg's time left - the same number the yield is
+        # divided by, so spread / days x 360 / price reproduces the cell. It used
+        # to be the near leg's, which matched the denominator on the spot row only.
+        "days": far,
         # ACT/360, the money-market convention for USD rates, so a cell can be
         # set against a SOFR or deposit quote without converting. Was ACT/365
         # until 2026-10-09; the difference is a flat x 365/360 (about 1.4%).
