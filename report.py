@@ -52,7 +52,10 @@ GRID_ROWS = sf.LAST_ROW
 TFEX_RE = re.compile(r"^GO[A-Z]\d\d$")
 # The yield can be negative - a pair whose column leg expires first reads
 # below zero - so the sign is part of the number, as it is for the spread.
-CELL_RE = re.compile(r"(?:(-?[\d.]+)%\s*)?\(([-+]?[\d.]+)\)\s*\((\d+)d\)")
+# A cell is "4.17% (+22.67) (47d)" on the spot row, "+0.121 pt/d (+9.23) (76d)"
+# on the swap row, and "(+34.70) (47d)" for a futures pair.
+CELL_RE = re.compile(
+    r"(?:(-?[\d.]+)%\s*|([-+][\d.]+) pt/d\s*)?\(([-+]?[\d.]+)\)\s*\((\d+)d\)")
 
 CROSS_EDGE = "#1a2a4a"
 INK, MUTED, FAINT, PAGE = "#1a1a1a", "#6b6b70", "#8a8a8f", "#ffffff"
@@ -143,7 +146,7 @@ def shade(yld: float | None) -> str:
 
 CELL_W, CELL_H = 1.0, 0.62
 HDR_W = 1.65  # row labels plus the LONG bar; wide enough for the swap note
-PAD_X, FOOT_H = 0.28, 1.15
+PAD_X, FOOT_H = 0.28, 1.95
 TOP_H = 1.45  # title, scale key, column labels + bid, and the SHORT bar
 
 # Every cell is Y_BID - X_ASK: buy the row leg, sell the column leg. The bars
@@ -169,7 +172,7 @@ def render(grid: list[list[str]], path: str,
     # The net row is spot with a cost taken off, so it is spot for venue
     # purposes even though its label no longer starts with XAU.
     col_venue = [venue(c) for c in cols]
-    row_venue = ["SPOT" if r.startswith(sf.NET_PREFIX) else venue(r) for r in row_keys]
+    row_venue = ["SPOT" if r.endswith(sf.NET_SUFFIX) else venue(r) for r in row_keys]
 
     x0 = PAD_X + HDR_W
     # Width is built up from the parts rather than scaled, so the right-hand
@@ -210,8 +213,8 @@ def render(grid: list[list[str]], path: str,
         ask = prices.get(row_keys[i], ("", ""))[1]
         # The net row has no price of its own; it shows the swap it deducted.
         note = ("ask " + ask) if ask else ""
-        if row_keys[i].startswith(sf.NET_PREFIX) and swap is not None:
-            note = f"{swap[0]:.3f} pt/d · {swap[1] * 100:.2f}%/yr"
+        if row_keys[i].endswith(sf.NET_SUFFIX) and swap is not None:
+            note = f"swap {swap[0]:.3f} pt/d"
         ax.text(lx, y + CELL_H / 2 + (0.10 if note else 0), name, fontsize=9.5,
                 fontweight="bold", color=INK, ha="right", va="center")
         if note:
@@ -222,7 +225,7 @@ def render(grid: list[list[str]], path: str,
                      and "SPOT" not in (row_venue[i], col_venue[j]))
             _cell(ax, grid[1 + i][1 + j].strip(), x0 + j * CELL_W, y, cross)
 
-    _footnotes(ax, top - len(rows) * CELL_H - 0.30)
+    _footnotes(ax, top - len(rows) * CELL_H - 0.30, swap)
     fig.savefig(path, facecolor=PAGE)
     plt.close(fig)
     return path
@@ -232,24 +235,29 @@ def _cell(ax, raw: str, x: float, y: float, cross: bool) -> None:
     m = CELL_RE.match(raw)
     if not m:
         return  # outside the triangle, or a shape we do not recognise
-    pct, spread, days = m.groups()
+    pct, per_day, spread, days = m.groups()
     yld = float(pct) / 100 if pct else None
+    fill = shade(yld) if pct else sf.NEUTRAL if per_day else PAGE
 
     ax.add_patch(Rectangle((x + 0.02, y + 0.03), CELL_W - 0.04, CELL_H - 0.06,
-                           facecolor=shade(yld),
+                           facecolor=fill,
                            edgecolor=CROSS_EDGE if cross else PAGE,
                            lw=1.8 if cross else 1.2, zorder=2 if cross else 1))
     mid = x + CELL_W / 2
-    if pct:
-        ax.text(mid, y + CELL_H - 0.22, pct + "%", fontsize=11, fontweight="bold",
-                color=INK, ha="center", va="center")
+    if pct or per_day:
+        # "+0.111 pt/d" does not fit the cell at the headline size, so the
+        # swap row's headline is set a size smaller.
+        head = pct + "%" if pct else per_day + " pt/d"
+        ax.text(mid, y + CELL_H - 0.22, head, fontsize=11 if pct else 9.5,
+                fontweight="bold", color=INK, ha="center", va="center")
         ax.text(mid, y + 0.17, spread + "   " + days + "d", fontsize=7.8,
                 color=MUTED, ha="center", va="center")
     else:
-        ax.text(mid, y + CELL_H / 2 + 0.06, spread, fontsize=9.5, color=MUTED,
-                ha="center", va="center")
-        ax.text(mid, y + CELL_H / 2 - 0.13, f"{days}d   gap<{sf.MIN_GAP}",
-                fontsize=7, color=FAINT, ha="center", va="center")
+        # Futures pair: the spread, and the days until the near leg must roll.
+        ax.text(mid, y + CELL_H - 0.22, spread, fontsize=11, fontweight="bold",
+                color=INK, ha="center", va="center")
+        ax.text(mid, y + 0.17, f"roll in {days}d", fontsize=7.8,
+                color=MUTED, ha="center", va="center")
 
 
 def _side_bars(ax, x0: float, top: float, n_cols: int, n_rows: int) -> None:
@@ -290,15 +298,26 @@ def _scale_key(ax, fig_w: float, fig_h: float) -> None:
             ha="right", va="center")
 
 
-def _footnotes(ax, fy: float) -> None:
-    ax.text(PAD_X, fy, "each cell = buy the row leg, sell the column leg; yield is that spread annualized",
-            fontsize=8.6, color=MUTED, va="center")
-    ax.text(PAD_X, fy - 0.22, "yield  /  spread (points)  /  days to the farther expiry",
-            fontsize=8.6, color=MUTED, va="center")
-    ax.add_patch(Rectangle((PAD_X + 0.02, fy - 0.53), 0.22, 0.13, facecolor="none",
+def _footnotes(ax, fy: float, swap: tuple[float, float] | None) -> None:
+    """What each row means and where its numbers come from. English, because
+    the image font has no Thai glyphs."""
+    rate = f"{swap[0]:.3f}" if swap else "s"
+    lines = [
+        ("Every cell: buy the row leg at ask, sell the column leg at bid.", MUTED),
+        ("XAUUSD: yield = spread / ask x 360 / days to the contract's expiry.  "
+         "Shown as  yield  (spread)  days.", MUTED),
+        (f"XAUUSD(+swap): the same trade after paying the XAUUSD swap of {rate} pt per day "
+         "(30-day average, DC106 ask).", MUTED),
+        ("    points per day = (spread - swap x days) / days.  "
+         "Shown as  pt/day  (spread after swap)  days.", MUTED),
+        ("Futures pairs: spread (points) and days until the nearer leg must be rolled.", MUTED),
+    ]
+    for k, (text, colour) in enumerate(lines):
+        ax.text(PAD_X, fy - k * 0.22, text, fontsize=8.6, color=colour, va="center")
+    oy = fy - len(lines) * 0.22 - 0.09
+    ax.add_patch(Rectangle((PAD_X + 0.02, oy - 0.065), 0.22, 0.13, facecolor="none",
                            edgecolor=CROSS_EDGE, lw=1.8))
-    ax.text(PAD_X + 0.34, fy - 0.465,
-            "outlined = COMEX leg against TFEX leg (cross-market)",
+    ax.text(PAD_X + 0.34, oy, "outlined = COMEX leg against TFEX leg (cross-market)",
             fontsize=8.6, color=MUTED, va="center")
 
 

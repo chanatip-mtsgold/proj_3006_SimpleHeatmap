@@ -49,7 +49,7 @@ SWAP_TAB = "Swap"
 SWAP_WINDOW = 30
 SWAP_ROW = LAST_ROW + 1  # 14, label in A, value in B - visible under the matrix
 SWAP_CELL = f"$B${SWAP_ROW}"
-NET_PREFIX = "net "  # the net row reads "net XAUUSD": spot's name, broker suffix dropped
+NET_SUFFIX = "(+swap)"  # the net row reads "XAUUSD(+swap)": spot's name, broker suffix dropped
 
 
 def leg_row(i: int) -> int:
@@ -248,6 +248,9 @@ def parts(row: int, col: str) -> dict:
         # divided by, so spread / days x 360 / price reproduces the cell. It used
         # to be the near leg's, which matched the denominator on the spot row only.
         "days": far,
+        # Days to whichever leg expires first - when a futures pair has to be
+        # rolled. Futures pairs show this; the spot rows show `days` instead.
+        "near": f'IF({tx}="",{dy},MIN({tx},{ty})-{today})',
         # ACT/360, the money-market convention for USD rates, so a cell can be
         # set against a SOFR or deposit quote without converting. Was ACT/365
         # until 2026-10-09; the difference is a flat x 365/360 (about 1.4%).
@@ -256,9 +259,16 @@ def parts(row: int, col: str) -> dict:
 
 
 def text_cell(row: int, col: str) -> str:
+    """Spot row: yield, spread, days to the contract's expiry. Futures pairs:
+    spread and days to the nearer expiry only - no yield. A futures pair is not
+    held to convergence here, so what matters is the spread and when the near
+    leg has to be rolled; an annualized rate over either leg's life misread it."""
     p = parts(row, col)
-    pct = f'TEXT({p["pct"]},"0.00%")&" "'
-    body = f'{pct}&"("&TEXT({p["spread"]},"+0.00;-0.00")&") ("&{p["days"]}&"d)"'
+    spread = f'"("&TEXT({p["spread"]},"+0.00;-0.00")&") "'
+    if row == FIRST_ROW:
+        body = f'TEXT({p["pct"]},"0.00%")&" "&{spread}&"("&{p["days"]}&"d)"'
+    else:
+        body = f'{spread}&"("&{p["near"]}&"d)"'
     return (
         f'=IF({p["unnamed"]},"",'
         f'IF({p["unpriced"]},"",IFERROR({body},"")))'
@@ -266,13 +276,11 @@ def text_cell(row: int, col: str) -> str:
 
 
 def value_cell(row: int, col: str) -> str:
-    """The numeric mirror: the yield, which is what the colour keys off.
-
-    The chart block reads its y-values straight out of here rather than
-    recomputing them. The grey "suppressed" rule keys off a blank mirror next
-    to a written cell; with nothing suppressed it no longer fires, but is left
-    in place in case a cell's yield ever fails to compute.
-    """
+    """The numeric mirror: the yield, which is what the colour keys off and
+    what the chart plots. Spot row only - futures pairs carry no yield, so
+    their mirror stays blank and they are left uncoloured and off the chart."""
+    if row != FIRST_ROW:
+        return ""
     p = parts(row, col)
     return (
         f'=IF({p["unnamed"]},"",'
@@ -304,14 +312,18 @@ def net_parts(col: str) -> dict:
 
 
 def net_text_cell(col: str) -> str:
+    """Points earned per day of holding once the swap is paid - the spread net
+    of swap spread over the days to the contract's expiry."""
     p = net_parts(col)
-    body = (f'TEXT({p["pct"]},"0.00%")&" ("&TEXT({p["spread"]},"+0.00;-0.00")'
+    per_day = f'({p["spread"]})/MAX({p["far"]},1)'
+    body = (f'TEXT({per_day},"+0.000;-0.000")&" pt/d ("&TEXT({p["spread"]},"+0.00;-0.00")'
             f'&") ("&{p["days"]}&"d)"')
     return (f'=IF({p["unnamed"]},"",IF({p["unpriced"]},"",'
             f'IF({p["no_swap"]},"",IFERROR({body},""))))')
 
 
 def net_value_cell(col: str) -> str:
+    """Still the net yield, so the row is coloured on the same scale as spot."""
     p = net_parts(col)
     return (f'=IF({p["unnamed"]},"",IF({p["unpriced"]},"",'
             f'IF({p["no_swap"]},"",IFERROR({p["pct"]},""))))')
@@ -526,7 +538,7 @@ def build(front) -> None:
                 f'INDEX({ALL_LEGS},1,{k})),"")')
 
     net_label = (f'=IF(A{FIRST_ROW}="","",'
-                 f'"{NET_PREFIX}"&REGEXREPLACE(A{FIRST_ROW},"\\.[a-z]+$",""))')
+                 f'REGEXREPLACE(A{FIRST_ROW},"\\.[a-z]+$","")&"{NET_SUFFIX}")')
     labels = [[label(1)], [net_label]]
     labels += [[label("ROW()-2")] for _ in range(SPAN - 1)]
     front.update(
@@ -618,7 +630,6 @@ def style(front) -> None:
     # A written cell whose mirror is blank is a suppressed one; a cell that is
     # blank on both sides is just outside the triangle and stays unpainted.
     tests = [
-        (f"=AND(NOT(ISNUMBER({mirror_ref})),{visible_ref}<>\"\")", SUPPRESSED),
         # ISNUMBER matters: a blank mirror cell holds "", and in Sheets text
         # compares as greater than any number, so ">=60" would match it.
         *(
