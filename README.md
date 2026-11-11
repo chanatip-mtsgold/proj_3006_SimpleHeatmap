@@ -308,6 +308,9 @@ uv run python rollover.py --force            # ส่งซ้ำ
 schtasks /create /xml Rollover_task.xml /tn SimpleHeatmap_Rollover
 ```
 
+ถ้า schtasks ฟ้อง `unable to switch the encoding` ให้แปลงไฟล์เป็น UTF-16 (และแก้ `encoding="UTF-16"`
+ในบรรทัดแรก) ก่อน — schtasks ไม่ยอมอ่าน UTF-8 บนเครื่องนี้
+
 ## Permission ที่ต้องมี
 
 | ชั้น | สิ่งที่ต้องมี |
