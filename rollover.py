@@ -273,7 +273,7 @@ def render(near: Contract, snapshot: date, rows: list[Row], hurdle: float,
     ax.text(PAD, 0.38, f"Roll {near.symbol} → later months",
             fontsize=13, fontweight="bold", color=INK, va="center")
     ax.text(PAD, 0.72,
-            f"COMEX GC · snapshot {snapshot:%Y-%m-%d} · {near.symbol} expiry "
+            f"COMEX GC · {near.symbol} expiry "
             f"{near.expiry:%Y-%m-%d} · FND ~{approx_fnd(near.symbol):%Y-%m-%d}",
             fontsize=8.6, color=MUTED, va="center")
     if last_record is not None:
