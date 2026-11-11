@@ -252,34 +252,6 @@ def fetch_quotes(symbols: list[str], target_utc: datetime, lookback_minutes: int
     return quotes
 
 
-def fetch_live(symbols: list[str]) -> dict:
-    """Whatever the terminal is showing right now, for the live dashboard.
-
-    Call inside an open `mt5_session`. Unlike fetch_quotes this reads the
-    current tick rather than history, so there is no window and nothing to
-    annualise against - the caller supplies the timestamp. Same return shape:
-    {symbol: (bid, ask, tick_utc)}, absent when there is no usable tick.
-    """
-    quotes: dict[str, tuple[float, float, datetime]] = {}
-    for sym in symbols:
-        if not mt5.symbol_select(sym, True):
-            logger.warning("symbol_select('%s') failed: %s", sym, mt5.last_error())
-            continue
-        tick = mt5.symbol_info_tick(sym)
-        if tick is None or tick.bid <= 0 or tick.ask <= 0:
-            logger.warning("No live tick for '%s'.", sym)
-            continue
-        quotes[sym] = (
-            float(tick.bid),
-            float(tick.ask),
-            datetime.fromtimestamp(tick.time, tz=timezone.utc),
-        )
-    return quotes
-
-
-# --------------------------------------------------------------------------- #
-# Which days still need a row
-# --------------------------------------------------------------------------- #
 def clock_times(cfg: dict) -> list[dtime]:
     """The times of day to snapshot, earliest first."""
     raw = cfg.get("snapshot_times") or [cfg.get("snapshot_time", "10:00")]
@@ -401,17 +373,17 @@ _SHEETS_EPOCH = date(1899, 12, 30)
 
 
 def _swap_source(raw: list[list[str]]) -> dict[str, list]:
-    """{TOM iso: row} from DC106 A3:F. One roll covers TOM..NEXT, which spans a
+    """{TOM iso: row} from DC106 Sheet1 A3:G. One roll covers TOM..NEXT, which spans a
     weekend or holiday on some days - Days carries that, so a per-day rate is a
     sum of points over a sum of days rather than an average of rows."""
     out = {}
     for r in raw:
-        r = r + [""] * (6 - len(r))
+        r = r + [""] * (7 - len(r))
         try:
             traded = datetime.strptime(r[0].strip(), "%y-%m-%d").date()
-            tom = datetime.strptime(r[2].strip(), "%d/%m/%Y").date()
-            nxt = datetime.strptime(r[3].strip(), "%d/%m/%Y").date()
-            bid, ask = float(r[4]), float(r[5])
+            tom = datetime.strptime(r[3].strip(), "%d/%m/%Y").date()
+            nxt = datetime.strptime(r[4].strip(), "%d/%m/%Y").date()
+            bid, ask = float(r[5]), float(r[6])
         except ValueError:
             continue  # blank or malformed line
         out[tom.isoformat()] = [traded.isoformat(), "'" + r[1].strip(), tom.isoformat(),
@@ -442,7 +414,9 @@ def sync_swap(cfg: dict, book) -> None:
     if not src_id:
         return
     try:
-        source = _swap_source(sheets_client().open_by_key(src_id).sheet1.get("A3:F"))
+        # Sheet1 is addressed by name: the DC106 file's first tab is Front, and
+        # C there is the Days column, so TOM/NEXT/bid/ask sit one column along.
+        source = _swap_source(sheets_client().open_by_key(src_id).worksheet("Sheet1").get("A3:G"))
         try:
             dst = book.worksheet(SWAP_TAB)
         except gspread.WorksheetNotFound:

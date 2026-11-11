@@ -151,8 +151,8 @@ SUPPRESSED = "#dcdbd6"  # distinctly greyer than NEUTRAL so it is not read as ze
 GREY_BAND = 0.02  # |yield| below this is barely carry and stays neutral
 FULL_COLOUR = 0.07  # and at this it is fully saturated
 
-# Ramp anchors, palest first. Sheets can only step between them; dashboard.py
-# interpolates across them for a continuous scale. Same endpoints either way.
+# Ramp anchors, palest first. Sheets can only step between them.
+#
 # The intermediate steps are sRGB midpoints of the three validated anchors, so
 # both arms stay luminance-matched (worst mismatch 1.2%) without introducing
 # hues that have not been checked.
