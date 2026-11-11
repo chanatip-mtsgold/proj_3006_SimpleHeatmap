@@ -277,10 +277,8 @@ def render(near: Contract, snapshot: date, rows: list[Row], hurdle: float,
             f"{near.expiry:%Y-%m-%d} · FND ~{approx_fnd(near.symbol):%Y-%m-%d}",
             fontsize=8.6, color=MUTED, va="center")
     if last_record is not None:
-        ax.text(width - PAD, 0.38, "last record", fontsize=8.0, color=FAINT,
-                va="center", ha="right")
-        ax.text(width - PAD, 0.68, f"{last_record:%Y-%m-%d %H:%M} BKK", fontsize=9.4,
-                color=INK, va="center", ha="right")
+        ax.text(width - PAD, 0.38, f"last record {last_record:%Y-%m-%d %H:%M} BKK",
+                fontsize=8.6, color=MUTED, va="center", ha="right")
 
     y = TOP_H
     x = PAD
