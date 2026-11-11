@@ -30,7 +30,8 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import matplotlib
 
@@ -65,6 +66,7 @@ STATE_FILE = os.path.join(PROJECT_DIR, "logs", "rollover_last.json")
 LOG_FILE = "rollover.log"
 
 DAY_COUNT = 360
+BKK = ZoneInfo("Asia/Bangkok")
 MONTH_CODES = "FGHJKMNQUVXZ"  # Jan..Dec
 
 INK, MUTED, FAINT, PAGE = report.INK, report.MUTED, report.FAINT, report.PAGE
@@ -193,7 +195,8 @@ def _records(token: str, table: str, params: list[tuple[str, str]],
                            headers={"Authorization": f"Bearer {token}"})
         res.raise_for_status()
         body = res.json()
-        out.extend(r["fields"] for r in body.get("records", []))
+        out.extend({**r["fields"], "_created": r.get("createdTime")}
+                   for r in body.get("records", []))
         offset = body.get("offset")
         if not offset or not all_pages:
             return out
@@ -210,8 +213,9 @@ def fetch_contracts(token: str) -> list[Contract]:
     return out
 
 
-def fetch_latest_quotes(token: str) -> tuple[date, dict[str, Quote]]:
-    """Every contract's quote on the newest snapshot date.
+def fetch_latest_quotes(token: str) -> tuple[date, dict[str, Quote], datetime | None]:
+    """Every contract's quote on the newest snapshot date, and when the newest
+    of those rows was written to Airtable (Bangkok time).
 
     About ten contracts are quoted a day, so the newest 100 rows always hold
     a full day.
@@ -226,6 +230,10 @@ def fetch_latest_quotes(token: str) -> tuple[date, dict[str, Quote]]:
         raise RuntimeError("Outright Quotes returned no rows")
 
     latest = max(r["Snapshot Date"] for r in rows)
+    created = [r["_created"] for r in rows
+               if r["Snapshot Date"] == latest and r.get("_created")]
+    last_record = (datetime.fromisoformat(max(created).replace("Z", "+00:00"))
+                   .astimezone(BKK) if created else None)
     quotes = {}
     for r in rows:
         if r["Snapshot Date"] != latest or r.get("Bid") is None or r.get("Ask") is None:
@@ -236,7 +244,7 @@ def fetch_latest_quotes(token: str) -> tuple[date, dict[str, Quote]]:
         # if someone fixes the table this line is the one to change.
         quotes[r["Contract"].strip()] = Quote(
             bid=float(r["Ask"]), ask=float(r["Bid"]), stale=bool(r.get("Stale Flag")))
-    return date.fromisoformat(latest), quotes
+    return date.fromisoformat(latest), quotes, last_record
 
 
 # --------------------------------------------------------------------------- #
@@ -252,7 +260,7 @@ def _fmt(v: float | None, spec: str) -> str:
 
 
 def render(near: Contract, snapshot: date, rows: list[Row], hurdle: float,
-           path: str) -> None:
+           path: str, last_record: datetime | None = None) -> None:
     width = sum(w for _, w in COLS) + 2 * PAD
     height = TOP_H + HEAD_H + ROW_H * len(rows) + FOOT_H
     fig = plt.figure(figsize=(width, height), dpi=160)
@@ -268,6 +276,11 @@ def render(near: Contract, snapshot: date, rows: list[Row], hurdle: float,
             f"COMEX GC · snapshot {snapshot:%Y-%m-%d} · {near.symbol} expiry "
             f"{near.expiry:%Y-%m-%d} · FND ~{approx_fnd(near.symbol):%Y-%m-%d}",
             fontsize=8.6, color=MUTED, va="center")
+    if last_record is not None:
+        ax.text(width - PAD, 0.38, "last record", fontsize=8.0, color=FAINT,
+                va="center", ha="right")
+        ax.text(width - PAD, 0.68, f"{last_record:%Y-%m-%d %H:%M} BKK", fontsize=9.4,
+                color=INK, va="center", ha="right")
 
     y = TOP_H
     x = PAD
@@ -350,7 +363,7 @@ def main() -> int:
     try:
         token = load_token()
         contracts = fetch_contracts(token)
-        snapshot, quotes = fetch_latest_quotes(token)
+        snapshot, quotes, last_record = fetch_latest_quotes(token)
     except Exception as exc:  # noqa: BLE001 - one log line beats a traceback under pythonw
         logger.error("Rollover: cannot read Airtable (%s).", exc)
         return 1
@@ -367,7 +380,8 @@ def main() -> int:
         return 1
 
     rows = roll_rows(near, contracts, quotes)
-    logger.info("Rollover %s on %s:", near.symbol, snapshot)
+    logger.info("Rollover %s on %s (last record %s):", near.symbol, snapshot,
+                last_record.isoformat(timespec="minutes") if last_record else "?")
     for r in rows:
         logger.info("  %s→%-4s bid %s ask %s spread %s @hurdle %s %3dd cost %s%s",
                     near.symbol, r.far, _fmt(r.near_bid, ".1f"), _fmt(r.far_ask, ".1f"),
@@ -378,7 +392,7 @@ def main() -> int:
         return 0
 
     if args.out:
-        render(near, snapshot, rows, hurdle, args.out)
+        render(near, snapshot, rows, hurdle, args.out, last_record)
         logger.info("Rollover: rendered %s.", args.out)
         return 0
 
@@ -394,7 +408,7 @@ def main() -> int:
         return 1
 
     png = os.path.join(PROJECT_DIR, "logs", f"rollover_{key}.png")
-    render(near, snapshot, rows, hurdle, png)
+    render(near, snapshot, rows, hurdle, png, last_record)
     try:
         report.post(space, f"Roll cost from {near.symbol} · snapshot {snapshot:%Y-%m-%d}", png)
     except Exception as exc:  # noqa: BLE001
