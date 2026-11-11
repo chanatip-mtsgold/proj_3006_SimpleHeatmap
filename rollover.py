@@ -164,8 +164,15 @@ def roll_rows(near: Contract, contracts: list[Contract],
 # Airtable
 # --------------------------------------------------------------------------- #
 def load_token() -> str:
-    env = dotenv_values(TOKEN_ENV) if os.path.exists(TOKEN_ENV) else {}
-    token = (env.get(TOKEN_KEY) or "").strip()
+    if not os.path.exists(TOKEN_ENV):
+        raise RuntimeError(f"{TOKEN_ENV} not found")
+    token = (dotenv_values(TOKEN_ENV).get(TOKEN_KEY) or "").strip()
+    if not token:
+        # Also accept the file holding nothing but the token itself.
+        with open(TOKEN_ENV, encoding="utf-8") as fh:
+            bare = fh.read().strip()
+        if bare.startswith("pat") and "=" not in bare and "\n" not in bare:
+            token = bare
     if not token:
         raise RuntimeError(f"{TOKEN_KEY} not found in {TOKEN_ENV}")
     return token

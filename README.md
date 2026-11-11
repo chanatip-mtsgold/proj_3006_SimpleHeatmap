@@ -288,7 +288,7 @@ cost%  = spread / Near_BID × 360 / (Far_Expiry − Near_Expiry)      ACT/360
 - Airtable อัปเดตราว 14:00–14:30 จึงตั้ง task ไว้ 15:00 จันทร์–ศุกร์
 
 ต้องมี Airtable Personal Access Token (scope `data.records:read` บน base นี้) ใน
-`..\.env\Airtable.env`:
+`..\.env\Airtable.env` (ใส่ token เปล่า ๆ บรรทัดเดียวก็ได้):
 
 ```
 AIRTABLE_TOKEN=pat...
