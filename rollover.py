@@ -109,6 +109,12 @@ class Row:
             return None
         return self.spread / self.near_bid * DAY_COUNT / self.days * 100
 
+    def hurdle_spread(self, hurdle_pct: float) -> float | None:
+        """The spread that would cost exactly `hurdle_pct` - the level to bid the roll at."""
+        if self.near_bid is None or self.days <= 0:
+            return None
+        return self.near_bid * hurdle_pct / 100 * self.days / DAY_COUNT
+
 
 # --------------------------------------------------------------------------- #
 # Calendar
@@ -237,8 +243,8 @@ def fetch_latest_quotes(token: str) -> tuple[date, dict[str, Quote]]:
 # Render
 # --------------------------------------------------------------------------- #
 COLS = [("Far", 0.9), ("Near BID", 1.15), ("Far ASK", 1.15),
-        ("Spread", 1.0), ("Days", 0.8), ("Cost %", 1.05)]
-ROW_H, HEAD_H, TOP_H, FOOT_H, PAD = 0.42, 0.42, 0.95, 0.95, 0.3
+        ("Spread", 1.0), ("@hurdle", 1.4), ("Days", 0.8), ("Cost %", 1.05)]
+ROW_H, HEAD_H, TOP_H, FOOT_H, PAD = 0.42, 0.42, 0.95, 1.2, 0.3
 
 
 def _fmt(v: float | None, spec: str) -> str:
@@ -266,7 +272,8 @@ def render(near: Contract, snapshot: date, rows: list[Row], hurdle: float,
     y = TOP_H
     x = PAD
     for name, w in COLS:
-        ax.text(x + w - 0.08 if name != "Far" else x + 0.08, y + HEAD_H / 2, name,
+        label = f"Spread @{hurdle:.2f}%" if name == "@hurdle" else name
+        ax.text(x + w - 0.08 if name != "Far" else x + 0.08, y + HEAD_H / 2, label,
                 fontsize=9, color=MUTED, fontweight="bold", va="center",
                 ha="right" if name != "Far" else "left")
         x += w
@@ -276,7 +283,8 @@ def render(near: Contract, snapshot: date, rows: list[Row], hurdle: float,
     for r in rows:
         cost = r.cost_pct
         cells = [r.far + ("*" if r.stale else ""), _fmt(r.near_bid, ".1f"),
-                 _fmt(r.far_ask, ".1f"), _fmt(r.spread, "+.1f"), str(r.days),
+                 _fmt(r.far_ask, ".1f"), _fmt(r.spread, "+.1f"),
+                 _fmt(r.hurdle_spread(hurdle), "+.1f"), str(r.days),
                  "—" if cost is None else f"{cost:.2f}%"]
         x = PAD
         for i, ((name, w), text) in enumerate(zip(COLS, cells)):
@@ -299,8 +307,11 @@ def render(near: Contract, snapshot: date, rows: list[Row], hurdle: float,
     ax.text(PAD, fy + 0.27,
             "cost = (Far ASK − Near BID) / Near BID × 360 / (Far expiry − Near expiry)",
             fontsize=8.0, color=FAINT, va="center")
+    ax.text(PAD, fy + 0.5,
+            f"spread @{hurdle:.2f}% = Near BID × {hurdle:.2f}% × days / 360  (the spread that costs exactly the hurdle)",
+            fontsize=8.0, color=FAINT, va="center")
     if any(r.stale for r in rows):
-        ax.text(PAD, fy + 0.5, "* stale quote on one of the legs",
+        ax.text(PAD, fy + 0.73, "* stale quote on one of the legs",
                 fontsize=8.0, color=FAINT, va="center")
 
     fig.savefig(path, facecolor=PAGE)
@@ -358,9 +369,10 @@ def main() -> int:
     rows = roll_rows(near, contracts, quotes)
     logger.info("Rollover %s on %s:", near.symbol, snapshot)
     for r in rows:
-        logger.info("  %s→%-4s bid %s ask %s spread %s %3dd cost %s%s",
+        logger.info("  %s→%-4s bid %s ask %s spread %s @hurdle %s %3dd cost %s%s",
                     near.symbol, r.far, _fmt(r.near_bid, ".1f"), _fmt(r.far_ask, ".1f"),
-                    _fmt(r.spread, "+.1f"), r.days, _fmt(r.cost_pct, ".2f"),
+                    _fmt(r.spread, "+.1f"), _fmt(r.hurdle_spread(hurdle), "+.1f"),
+                    r.days, _fmt(r.cost_pct, ".2f"),
                     " (stale)" if r.stale else "")
     if args.dry_run:
         return 0

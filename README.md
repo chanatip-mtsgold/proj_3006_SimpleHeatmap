@@ -281,6 +281,8 @@ cost%  = spread / Near_BID × 360 / (Far_Expiry − Near_Expiry)      ACT/360
   เปลี่ยนไปคิดจาก G27 เอง ไม่ต้องแก้โค้ด ถ้าจริง ๆ roll ข้ามไปตัวอื่นให้เอาติ๊ก `Active Month`
   ของตัวที่ข้ามออก หรือดูชั่วคราวด้วย `--from J27`
 - **ขาไกล** = ทุกตัวที่ติ๊ก `Active Month` และหมดอายุหลังขาใกล้ — เพิ่ม/ตัดที่ Airtable อย่างเดียว
+- คอลัมน์ **`Spread @4.50%`** ต่อจาก Spread = spread ที่ทำให้ cost เท่ากับ hurdle พอดี
+  (`Near_BID × hurdle × days / 360`) ใช้เป็นราคาที่ควรตั้ง roll — spread จริงต่ำกว่าเลขนี้เมื่อไหร่ cost ต่ำกว่า hurdle
 - ช่อง Cost % เป็น**สีเขียวเมื่อต่ำกว่า hurdle** (`roll_hurdle_pct` ใน `config.json`, ตั้งไว้ 4.50%)
 - ขาที่ `Stale Flag` ติ๊กมีเครื่องหมาย `*` ขาไหนไม่มีราคาแสดง `—`
 - ส่งเข้า space ตามคีย์ `rollover_space_key` ใน `config.json` (ตอนนี้ `TestSpace` ใน `..\.env\Path.env`)
