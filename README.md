@@ -257,6 +257,57 @@ uv run python report.py              # ส่งเข้า space
 uv run python report.py --out x.png  # render เฉย ๆ ไม่ส่ง
 ```
 
+## `rollover.py` — ต้นทุนการ roll COMEX ส่งเข้า Google Chat
+
+ตอบคำถามว่า "roll ขาที่ถือ (ตอนนี้ Z26) ไปเดือนอื่นเสียกี่ %/ปี" แยกจาก job MT5 ทั้งหมด
+ข้อมูลมาจาก Airtable base `appXoUtj6dYJesMRG`:
+table `Contracts` (วันหมดอายุ + checkbox `Active Month`) และ `Outright Quotes` (bid/ask รายวัน)
+
+```
+spread = Far_ASK − Near_BID                      ขายขาใกล้ที่ bid ซื้อขาไกลที่ ask
+cost%  = spread / Near_BID × 360 / (Far_Expiry − Near_Expiry)      ACT/360
+```
+
+ตัวอย่าง snapshot 2026-11-10: ขาย Z26 4118.8 ซื้อ G27 4152.2 = 33.4 pt = 0.81% ต่อช่วง 57 วัน
+→ **5.12%/ปี**
+
+- **หารด้วยระยะระหว่างวันหมดอายุสองขา ไม่ใช่วันนี้ถึงขาไกล** — spread ที่จ่ายคือ carry ของช่วง
+  Near→Far เท่านั้น ระหว่างนี้ถึงวันหมดอายุขาใกล้เรายังถือขาใกล้อยู่ ไม่ได้จ่ายอะไรเพิ่ม
+- **`Bid` กับ `Ask` ใน `Outright Quotes` สลับกัน** — Bid > Ask ทุกแถว (Z26 2026-11-10: Bid 4119.1,
+  Ask 4118.8) สคริปต์อ่าน `Ask` เป็น bid และ `Bid` เป็น ask ตรง ๆ ถ้าวันหนึ่งแก้ table ให้ถูก
+  ต้องแก้ที่ `fetch_latest_quotes` บรรทัดเดียว
+- **ขาใกล้เลือกเอง** = contract ที่ติ๊ก `Active Month` ตัวแรกที่ **FND ยังไม่ถึง** (FND ≈ วันทำการ
+  สุดท้ายของเดือนก่อนเดือนส่งมอบ ไม่นับวันหยุดตลาด; Z26 → 30 พ.ย. 2026) พอถึง FND รายงานจะ
+  เปลี่ยนไปคิดจาก G27 เอง ไม่ต้องแก้โค้ด ถ้าจริง ๆ roll ข้ามไปตัวอื่นให้เอาติ๊ก `Active Month`
+  ของตัวที่ข้ามออก หรือดูชั่วคราวด้วย `--from J27`
+- **ขาไกล** = ทุกตัวที่ติ๊ก `Active Month` และหมดอายุหลังขาใกล้ — เพิ่ม/ตัดที่ Airtable อย่างเดียว
+- ช่อง Cost % เป็น**สีเขียวเมื่อต่ำกว่า hurdle** (`roll_hurdle_pct` ใน `config.json`, ตั้งไว้ 4.50%)
+- ขาที่ `Stale Flag` ติ๊กมีเครื่องหมาย `*` ขาไหนไม่มีราคาแสดง `—`
+- ส่งเข้า space ตามคีย์ `rollover_space_key` ใน `config.json` (ตอนนี้ `TestSpace` ใน `..\.env\Path.env`)
+- **ไม่ส่งซ้ำ** — จำ `(snapshot, ขาใกล้)` ที่ส่งล่าสุดไว้ใน `logs/rollover_last.json`
+- Airtable อัปเดตราว 14:00–14:30 จึงตั้ง task ไว้ 15:00 จันทร์–ศุกร์
+
+ต้องมี Airtable Personal Access Token (scope `data.records:read` บน base นี้) ใน
+`..\.env\Airtable.env`:
+
+```
+AIRTABLE_TOKEN=pat...
+```
+
+```bash
+uv run python rollover.py --dry-run          # log ตัวเลขอย่างเดียว
+uv run python rollover.py --out roll.png     # render ไม่ส่ง
+uv run python rollover.py --from G27 --out g.png
+uv run python rollover.py                    # ส่งเข้า space (ข้ามถ้าส่ง snapshot นี้ไปแล้ว)
+uv run python rollover.py --force            # ส่งซ้ำ
+```
+
+ตั้ง task:
+
+```bash
+schtasks /create /xml Rollover_task.xml /tn SimpleHeatmap_Rollover
+```
+
 ## Permission ที่ต้องมี
 
 | ชั้น | สิ่งที่ต้องมี |

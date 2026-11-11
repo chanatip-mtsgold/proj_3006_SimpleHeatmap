@@ -1122,6 +1122,7 @@ dependencies = [
     { name = "metatrader5" },
     { name = "plotly" },
     { name = "python-dotenv" },
+    { name = "requests" },
     { name = "tzdata" },
 ]
 
@@ -1134,6 +1135,7 @@ requires-dist = [
     { name = "metatrader5", specifier = ">=5.0.45" },
     { name = "plotly", specifier = ">=5.24" },
     { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "requests", specifier = ">=2.31" },
     { name = "tzdata", specifier = ">=2024.1" },
 ]
 

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>proj_3006 Rollover - post COMEX roll cost (from Airtable) to Google Chat at 15:00 Thai time on weekdays.</Description>
+    <URI>\SimpleHeatmap_Rollover</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-11-12T15:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByWeek>
+        <DaysOfWeek>
+          <Monday />
+          <Tuesday />
+          <Wednesday />
+          <Thursday />
+          <Friday />
+        </DaysOfWeek>
+        <WeeksInterval>1</WeeksInterval>
+      </ScheduleByWeek>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <!-- Give up on a run after ten minutes and wait for the next trigger.
+         A healthy run takes about ten seconds, so anything near this limit is
+         stuck rather than slow. No RestartOnFailure on purpose: a missed day
+         is posted by the next run, since it always reads the newest snapshot.
+         Scheduler enforces this with a hard kill, which writes nothing to the
+         log, so the script also sets its own request timeouts and fails first
+         where it can. -->
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <!-- pythonw from the venv, not the .bat: a .bat always flashes a cmd
+         window and "uv run" opens its own console on top of that. Going
+         straight to the interpreter is the only way nothing appears at all.
+         The cost is that the lockfile is no longer checked on each run, so
+         run "uv sync" yourself after changing dependencies. -->
+    <Exec>
+      <Command>C:\Users\p.alpha\Documents\Github\proj_3006_SimpleHeatmap\.venv\Scripts\pythonw.exe</Command>
+      <Arguments>rollover.py</Arguments>
+      <WorkingDirectory>C:\Users\p.alpha\Documents\Github\proj_3006_SimpleHeatmap</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

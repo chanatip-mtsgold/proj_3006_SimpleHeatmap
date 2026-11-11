@@ -324,12 +324,12 @@ def _footnotes(ax, fy: float, swap: tuple[float, float] | None) -> None:
 # --------------------------------------------------------------------------- #
 # Post
 # --------------------------------------------------------------------------- #
-def chat_space() -> str | None:
+def chat_space(want: str = SPACE_KEY) -> str | None:
     try:
         with open(ENV_FILE, encoding="utf-8") as fh:
             for line in fh:
                 key, _, value = line.partition("=")
-                if key.strip() == SPACE_KEY and value.strip():
+                if key.strip() == want and value.strip():
                     return value.strip().split("/")[-1]
     except OSError as exc:
         logger.warning("Cannot read %s (%s).", ENV_FILE, exc)
