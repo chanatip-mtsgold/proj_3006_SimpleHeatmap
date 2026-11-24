@@ -361,126 +361,6 @@ def append_rows(ws, rows: list[list]) -> str:
     return rng
 
 
-# --------------------------------------------------------------------------- #
-# Swap
-# --------------------------------------------------------------------------- #
-# The daily XAUUSD tom-next swap, copied from the DC106 table into this file so
-# Front can net it off the spot row with a plain SUMIFS, and so the history
-# stays here even if a row is later edited or removed at the source.
-SWAP_TAB = "Swap"
-SWAP_HEADER = ["Date", "Time", "TOM", "NEXT", "Days", "XAU bid", "XAU ask"]
-_SHEETS_EPOCH = date(1899, 12, 30)
-
-
-def _swap_source(raw: list[list[str]]) -> dict[str, list]:
-    """{TOM iso: row} from DC106 Sheet1 A3:G. One roll covers TOM..NEXT, which spans a
-    weekend or holiday on some days - Days carries that, so a per-day rate is a
-    sum of points over a sum of days rather than an average of rows."""
-    out = {}
-    for r in raw:
-        r = r + [""] * (7 - len(r))
-        try:
-            traded = datetime.strptime(r[0].strip(), "%y-%m-%d").date()
-            tom = datetime.strptime(r[3].strip(), "%d/%m/%Y").date()
-            nxt = datetime.strptime(r[4].strip(), "%d/%m/%Y").date()
-            bid, ask = float(r[5]), float(r[6])
-        except ValueError:
-            continue  # blank or malformed line
-        out[tom.isoformat()] = [traded.isoformat(), "'" + r[1].strip(), tom.isoformat(),
-                                nxt.isoformat(), (nxt - tom).days, bid, ask]
-    return out
-
-
-def _swap_held(dst) -> dict[str, list]:
-    """The Swap tab as it stands, in the same shape _swap_source returns."""
-    def iso(v):
-        return (_SHEETS_EPOCH + timedelta(days=int(v))).isoformat() if isinstance(v, (int, float)) else str(v)
-
-    out = {}
-    for r in dst.get("A2:G", value_render_option="UNFORMATTED_VALUE"):
-        r = r + [""] * (7 - len(r))
-        if r[2] == "":
-            continue
-        row = [iso(r[0]), "'" + str(r[1]), iso(r[2]), iso(r[3]), r[4], r[5], r[6]]
-        out[row[2]] = row
-    return out
-
-
-def sync_swap(cfg: dict, book) -> None:
-    """Merge DC106 into the Swap tab: new rolls added, changed ones updated,
-    rolls no longer at the source kept. Failure is logged, never raised - the
-    prices matter more than the swap."""
-    src_id = cfg.get("swap_spreadsheet_id")
-    if not src_id:
-        return
-    try:
-        # Sheet1 is addressed by name: the DC106 file's first tab is Front, and
-        # C there is the Days column, so TOM/NEXT/bid/ask sit one column along.
-        source = _swap_source(sheets_client().open_by_key(src_id).worksheet("Sheet1").get("A3:G"))
-        try:
-            dst = book.worksheet(SWAP_TAB)
-        except gspread.WorksheetNotFound:
-            dst = book.add_worksheet(SWAP_TAB, rows=1000, cols=len(SWAP_HEADER))
-        held = _swap_held(dst)
-        merged = {**held, **source}
-        rows = [merged[k] for k in sorted(merged)]
-        dst.update(values=[SWAP_HEADER] + rows, range_name=f"A1:G{len(rows) + 1}",
-                   value_input_option="USER_ENTERED")
-        logger.info("Swap: %d rolls held, %d new from DC106 (latest TOM %s).",
-                    len(rows), len(set(source) - set(held)), max(merged) if merged else "-")
-    except Exception:
-        logger.exception("Swap sync failed; Front keeps the swap it already has.")
-
-
-# --------------------------------------------------------------------------- #
-def report_latest(cfg: dict, ws, legs, slot) -> None:
-    """Post the newest slot to Chat. Front only ever shows the last row, so
-    back-filling several slots at once still produces one report, for the last.
-
-    Nothing is posted for a slot that has already gone stale. A run that fires
-    the morning after the machine was off is back-filling history, and sending
-    last night's matrix as if it were current is worse than sending nothing -
-    the sheet still gets the row either way.
-
-    A failure here is logged and swallowed: the numbers are already in the
-    sheet, and losing them to a Chat outage would be the worse trade.
-    """
-    import report  # deferred: report imports this module, and pulls in matplotlib
-
-    day, at, quotes = slot
-    stamp = f"{day:%Y-%m-%d} {at:%H:%M}"
-
-    # The rollover matrix (rollover.py, its own task at 10:00) replaced this
-    # image in Chat on 2026-11-24; the sheet is still filled every slot.
-    if not cfg.get("heatmap_report", True):
-        logger.info("%s logged — heatmap report off (heatmap_report=false).", stamp)
-        return
-
-    local, _ = snapshot_times(cfg, day, at)
-    behind = datetime.now(local.tzinfo) - local
-    grace = timedelta(minutes=cfg.get("report_grace_minutes", 30))
-    if behind > grace:
-        logger.info(
-            "%s was logged %s late (grace %s) — sheet updated, no report sent.",
-            stamp, _hm(behind), _hm(grace),
-        )
-        return
-
-    try:
-        held = set(cfg.get("unquoted_symbols", []))
-        missing = [
-            s for s in report.expected_legs(legs, day) if s not in quotes and s not in held
-        ]
-        report.send(ws.spreadsheet, missing, stamp, os.path.dirname(os.path.abspath(__file__)))
-    except Exception:
-        logger.exception("Posting the %s report failed; the sheet is still correct.", stamp)
-
-
-def _hm(delta: timedelta) -> str:
-    minutes = int(delta.total_seconds() // 60)
-    return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Append an MT5 bid/ask snapshot to Google Sheets.")
     parser.add_argument(
@@ -499,13 +379,7 @@ def main() -> int:
 
     try:
         ws = get_worksheet(cfg)
-        if not args.dry_run:
-            sync_swap(cfg, ws.spreadsheet)
-
-        # parse_header rather than read_layout: the report needs the TTMs to
-        # tell a contract that has rolled off from one that simply failed.
-        meta, legs = parse_header(ws.row_values(1))
-        layout = [(name, col) for name, col, _ in legs]
+        meta, layout = read_layout(ws)
         if not layout:
             logger.error("No symbols found in row 1 of '%s'. Nothing to do.", ws.title)
             return 1
@@ -526,7 +400,6 @@ def main() -> int:
         symbols = [s for s, _ in layout if s not in held]
         lookback = cfg.get("lookback_minutes", 3)
         rows: list[list] = []
-        logged: list[tuple[date, dtime, dict]] = []
 
         with mt5_session(cfg["mt5_path"]):
             for day, at in slots:
@@ -545,7 +418,6 @@ def main() -> int:
                     continue
 
                 rows.append(build_row(meta, layout, quotes, target_local))
-                logged.append((day, at, quotes))
                 logger.info("%s %s: %d/%d symbols.", day, at, len(quotes), len(layout))
 
         if not rows:
@@ -560,7 +432,6 @@ def main() -> int:
         ensure_header_row2(ws, layout)
         rng = append_rows(ws, rows)
         logger.info("Appended %d row(s) to %s.", len(rows), rng)
-        report_latest(cfg, ws, legs, logged[-1])
         return 0
 
     except Exception:
