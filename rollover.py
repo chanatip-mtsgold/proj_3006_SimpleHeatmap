@@ -1,8 +1,9 @@
-"""proj_3006 — what it costs to roll the COMEX gold position, posted to Chat.
+"""proj_3006 — COMEX gold calendar-spread matrix (and roll cost), posted to Chat.
 
 Reads the Airtable base the Comex-FWD strategy keeps (contract calendar plus a
 daily outright bid/ask per contract), works out the annualised cost of rolling
-the near leg into every later active month, renders it as a table and posts it
+the near leg into every later active month (logged), renders a near − far spread
+matrix of every quoted contract and posts it
 to a Google Chat space.
 
     cost% = (Far_ASK - Near_BID) / Near_BID x 360 / (Far_Expiry - Near_Expiry)
@@ -69,9 +70,6 @@ DAY_COUNT = 360
 BKK = ZoneInfo("Asia/Bangkok")
 MONTH_CODES = "FGHJKMNQUVXZ"  # Jan..Dec
 
-INK, MUTED, FAINT, PAGE = report.INK, report.MUTED, report.FAINT, report.PAGE
-BELOW_HURDLE = "#cdebd3"  # soft green; black text stays well above 7:1
-RULE = "#e4e3df"
 
 
 # --------------------------------------------------------------------------- #
@@ -135,6 +133,18 @@ def approx_fnd(symbol: str) -> date:
     year, month = delivery_month(symbol)
     year, month = (year - 1, 12) if month == 1 else (year, month - 1)
     day = date(year, month, calendar.monthrange(year, month)[1])
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day
+
+
+def approx_fpd(symbol: str) -> date:
+    """First position day: the weekday before the first notice day.
+
+    Matches the CME gold calendar (GCZ26: FPD 2026-11-27, FND 2026-11-30;
+    GCF27: 2026-12-30 / 2026-12-31). Holidays ignored, as for approx_fnd.
+    """
+    day = approx_fnd(symbol) - timedelta(days=1)
     while day.weekday() >= 5:
         day -= timedelta(days=1)
     return day
@@ -248,84 +258,156 @@ def fetch_latest_quotes(token: str) -> tuple[date, dict[str, Quote], datetime | 
 
 
 # --------------------------------------------------------------------------- #
-# Render
+# Render - spread matrix, dark, in the layout of the exchange's spread window
 # --------------------------------------------------------------------------- #
-COLS = [("Far", 0.9), ("Near BID", 1.15), ("Far ASK", 1.15),
-        ("Spread", 1.0), ("@hurdle", 1.4), ("Days", 0.8), ("Cost %", 1.05)]
-ROW_H, HEAD_H, TOP_H, FOOT_H, PAD = 0.42, 0.42, 0.95, 1.2, 0.3
+BG = "#1b1c1e"
+CELL = "#232427"
+HEAD = "#2b2c30"
+GRID = "#34363a"
+TEXT = "#e8e8e8"
+DIM = "#8b8d92"
+ASK_INK = "#e5534b"
+BID_INK = "#3fb950"
+NEAR_MARK = "#3fb950"  # the leg the book holds now
+STALE_MARK = "#d29922"  # amber, so it is not read as an ask price
+CHEAP = "#1f6f3a"  # lowest roll yield; fades to CELL over the top TOP_N
+TOP_N = 10
+SUGGEST_ON_SHADE = "#a9c7b2"  # the recommend line on a green cell, still fainter than TEXT
+
+LABEL_W, CELL_W, HEAD_H, CELL_H, TITLE_H, FOOT_H = 1.15, 1.05, 0.62, 0.62, 0.62, 1.05
 
 
 def _fmt(v: float | None, spec: str) -> str:
     return "—" if v is None else format(v, spec)
 
 
-def render(near: Contract, snapshot: date, rows: list[Row], hurdle: float,
-           path: str, last_record: datetime | None = None) -> None:
-    width = sum(w for _, w in COLS) + 2 * PAD
-    height = TOP_H + HEAD_H + ROW_H * len(rows) + FOOT_H
+def _mix(a: str, b: str, t: float) -> tuple[float, float, float]:
+    """`a` at t=0, `b` at t=1."""
+    ca, cb = matplotlib.colors.to_rgb(a), matplotlib.colors.to_rgb(b)
+    return tuple(x + (y - x) * t for x, y in zip(ca, cb))
+
+
+def _quote_block(ax, x_right: float, y_mid: float, q: Quote | None, size: float) -> None:
+    ax.text(x_right, y_mid - 0.1, _fmt(q.ask if q else None, ".1f"),
+            fontsize=size, color=ASK_INK, ha="right", va="center")
+    ax.text(x_right, y_mid + 0.1, _fmt(q.bid if q else None, ".1f"),
+            fontsize=size, color=BID_INK, ha="right", va="center")
+
+
+def render_matrix(legs: list[Contract], quotes: dict[str, Quote], near: str | None,
+                  snapshot: date, path: str, hurdle: float,
+                  last_record: datetime | None = None) -> None:
+    """Upper-triangle matrix: row = near leg, column = far leg.
+
+    Each cell is the roll from row to column - sell the near at its bid, buy
+    the far at its ask - as points and as an annualised yield (Row.cost_pct).
+    """
+    rows, cols = legs[:-1], legs[1:]
+    cells: dict[tuple[int, int], Row] = {}
+    for i, n in enumerate(rows):
+        for j, f in enumerate(cols):
+            if j < i:
+                continue
+            nq, fq = quotes.get(n.symbol), quotes.get(f.symbol)
+            cells[i, j] = Row(far=f.symbol, near_bid=nq.bid if nq else None,
+                              far_ask=fq.ask if fq else None,
+                              days=(f.expiry - n.expiry).days,
+                              stale=bool((nq and nq.stale) or (fq and fq.stale)))
+    ranked = sorted((k for k, r in cells.items() if r.cost_pct is not None),
+                    key=lambda k: cells[k].cost_pct)
+    shade = {k: _mix(CHEAP, CELL, rank / TOP_N) for rank, k in enumerate(ranked[:TOP_N])}
+
+    width = LABEL_W + CELL_W * len(cols)
+    height = TITLE_H + HEAD_H + CELL_H * len(rows) + FOOT_H
     fig = plt.figure(figsize=(width, height), dpi=160)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, width)
     ax.set_ylim(height, 0)
     ax.axis("off")
-    fig.patch.set_facecolor(PAGE)
+    fig.patch.set_facecolor(BG)
 
-    ax.text(PAD, 0.38, f"Roll {near.symbol} → later months",
-            fontsize=13, fontweight="bold", color=INK, va="center")
-    ax.text(PAD, 0.72,
-            f"COMEX GC · {near.symbol} expiry "
-            f"{near.expiry:%Y-%m-%d} · FND ~{approx_fnd(near.symbol):%Y-%m-%d}",
-            fontsize=8.6, color=MUTED, va="center")
+    ax.text(0.1, 0.2, "COMEX GC rollover cost", fontsize=10, fontweight="bold",
+            color=TEXT, va="center")
+    stamp = f"snapshot {snapshot:%Y-%m-%d}"
     if last_record is not None:
-        ax.text(width - PAD, 0.38, f"last record {last_record:%Y-%m-%d %H:%M} BKK",
-                fontsize=8.6, color=MUTED, va="center", ha="right")
+        stamp += f" · last record {last_record:%Y-%m-%d %H:%M} BKK"
+    ax.text(width - 0.1, 0.2, stamp, fontsize=7, color=DIM, ha="right", va="center")
+    ax.text(0.1, 0.42, "far ask − near bid (annualised yield)", fontsize=7,
+            color=DIM, va="center")
+    ax.text(width - 0.1, 0.42, f"recommend yield at ({hurdle:.2f}%)", fontsize=7,
+            color=DIM, ha="right", va="center")
 
-    y = TOP_H
-    x = PAD
-    for name, w in COLS:
-        label = f"Spread @{hurdle:.2f}%" if name == "@hurdle" else name
-        ax.text(x + w - 0.08 if name != "Far" else x + 0.08, y + HEAD_H / 2, label,
-                fontsize=9, color=MUTED, fontweight="bold", va="center",
-                ha="right" if name != "Far" else "left")
-        x += w
-    y += HEAD_H
-    ax.plot([PAD, width - PAD], [y, y], color=INK, lw=0.8)
+    def mark(x: float, y: float, h: float, sym: str) -> None:
+        q = quotes.get(sym)
+        colour = STALE_MARK if q and q.stale else NEAR_MARK if sym == near else None
+        if colour:
+            ax.add_patch(Rectangle((x, y + 0.04), 0.045, h - 0.08,
+                                   facecolor=colour, edgecolor="none"))
 
-    for r in rows:
-        cost = r.cost_pct
-        cells = [r.far + ("*" if r.stale else ""), _fmt(r.near_bid, ".1f"),
-                 _fmt(r.far_ask, ".1f"), _fmt(r.spread, "+.1f"),
-                 _fmt(r.hurdle_spread(hurdle), "+.1f"), str(r.days),
-                 "—" if cost is None else f"{cost:.2f}%"]
-        x = PAD
-        for i, ((name, w), text) in enumerate(zip(COLS, cells)):
-            last = i == len(COLS) - 1
-            if last and cost is not None and cost < hurdle:
-                ax.add_patch(Rectangle((x, y + 0.04), w, ROW_H - 0.08,
-                                       facecolor=BELOW_HURDLE, edgecolor="none"))
-            ax.text(x + 0.08 if i == 0 else x + w - 0.08, y + ROW_H / 2, text,
-                    fontsize=10, va="center", ha="left" if i == 0 else "right",
-                    color=INK, fontweight="bold" if last or i == 0 else "normal")
-            x += w
-        y += ROW_H
-        ax.plot([PAD, width - PAD], [y, y], color=RULE, lw=0.6)
+    # Column headers.
+    y0 = TITLE_H
+    ax.add_patch(Rectangle((0, y0), width, HEAD_H, facecolor=HEAD, edgecolor="none"))
+    for j, c in enumerate(cols):
+        x = LABEL_W + CELL_W * j
+        ax.text(x + CELL_W - 0.08, y0 + 0.13, c.symbol, fontsize=7.5, fontweight="bold",
+                color=TEXT, ha="right", va="center")
+        _quote_block(ax, x + CELL_W - 0.08, y0 + 0.4, quotes.get(c.symbol), 7.5)
+        mark(x, y0, HEAD_H, c.symbol)
 
-    fy = y + 0.3
-    ax.add_patch(Rectangle((PAD, fy - 0.08), 0.22, 0.16,
-                           facecolor=BELOW_HURDLE, edgecolor="none"))
-    ax.text(PAD + 0.32, fy, f"below hurdle {hurdle:.2f}%",
-            fontsize=8.4, color=MUTED, va="center")
-    ax.text(PAD, fy + 0.27,
-            "cost = (Far ASK − Near BID) / Near BID × 360 / (Far expiry − Near expiry)",
-            fontsize=8.0, color=FAINT, va="center")
-    ax.text(PAD, fy + 0.5,
-            f"spread @{hurdle:.2f}% = Near BID × {hurdle:.2f}% × days / 360  (the spread that costs exactly the hurdle)",
-            fontsize=8.0, color=FAINT, va="center")
-    if any(r.stale for r in rows):
-        ax.text(PAD, fy + 0.73, "* stale quote on one of the legs",
-                fontsize=8.0, color=FAINT, va="center")
+    # Rows.
+    for i, n in enumerate(rows):
+        y = TITLE_H + HEAD_H + CELL_H * i
+        ax.add_patch(Rectangle((0, y), LABEL_W, CELL_H, facecolor=HEAD, edgecolor="none"))
+        ax.text(0.12, y + 0.13, n.symbol, fontsize=7.5, fontweight="bold",
+                color=TEXT, va="center")
+        _quote_block(ax, 0.12 + 0.6, y + 0.4, quotes.get(n.symbol), 7.5)
+        mark(0, y, CELL_H, n.symbol)
+        for j, f in enumerate(cols):
+            if (i, j) not in cells:
+                continue
+            r = cells[i, j]
+            x = LABEL_W + CELL_W * j
+            ax.add_patch(Rectangle((x, y), CELL_W, CELL_H, facecolor=shade.get((i, j), CELL),
+                                   edgecolor=GRID, lw=0.5))
+            ax.text(x + 0.08, y + 0.13, f"{n.symbol}-{f.symbol} ({r.days}d)", fontsize=5.5,
+                    color=DIM if (i, j) not in shade else TEXT, va="center")
+            pct = r.cost_pct
+            ax.text(x + CELL_W - 0.08, y + 0.33,
+                    f"{_fmt(r.spread, '+.1f')} ({_fmt(pct, '.2f')}%)" if pct is not None else "—",
+                    fontsize=7.5, color=TEXT, ha="right", va="center",
+                    fontweight="bold" if (i, j) in shade else "normal")
+            ax.text(x + CELL_W - 0.08, y + 0.5,
+                    f"{_fmt(r.hurdle_spread(hurdle), '+.1f')} ({hurdle:.2f}%)",
+                    fontsize=6.5, color=DIM if (i, j) not in shade else SUGGEST_ON_SHADE,
+                    ha="right", va="center")
 
-    fig.savefig(path, facecolor=PAGE)
+    fy = TITLE_H + HEAD_H + CELL_H * len(rows) + 0.2
+    for k in range(TOP_N):
+        ax.add_patch(Rectangle((0.1 + 0.07 * k, fy - 0.06), 0.07, 0.12,
+                               facecolor=_mix(CHEAP, CELL, k / TOP_N), edgecolor="none"))
+    ax.text(0.1 + 0.07 * TOP_N + 0.08, fy, f"lowest yield (top {TOP_N})",
+            fontsize=6.5, color=DIM, va="center")
+    lx = 0.1 + 0.07 * TOP_N + 1.4
+    marks = [(NEAR_MARK, "current leg")]
+    if any(q.stale for q in quotes.values()):  # Airtable flags this rarely (1 in ~1,000 rows)
+        marks.append((STALE_MARK, "stale quote"))
+    for colour, label in marks:
+        ax.add_patch(Rectangle((lx, fy - 0.06), 0.045, 0.12, facecolor=colour,
+                               edgecolor="none"))
+        ax.text(lx + 0.1, fy, label, fontsize=6.5, color=DIM, va="center")
+        lx += 0.95
+    notes = [
+        "cell = far ask − near bid (yield = spread / near bid × 360 / days between expiries)",
+        f"recommend yield ({hurdle:.2f}%) = the most we want to pay to roll, annualised;"
+        " a roll at or below it is worth doing",
+        "faint line = spread that gives exactly the recommend yield"
+        " - bid the roll at this spread or tighter",
+        "header: ask red, bid green",
+    ]
+    for k, note in enumerate(notes):
+        ax.text(0.1, fy + 0.22 + 0.17 * k, note, fontsize=6.5, color=DIM, va="center")
+
+    fig.savefig(path, facecolor=BG)
     plt.close(fig)
 
 
@@ -356,7 +438,7 @@ def main() -> int:
 
     setup_logger(LOG_FILE)
     cfg = load_config()
-    hurdle = float(cfg.get("roll_hurdle_pct", 4.50))
+    hurdle = float(cfg.get("roll_hurdle_pct", 4.80))
 
     try:
         token = load_token()
@@ -378,6 +460,9 @@ def main() -> int:
         return 1
 
     rows = roll_rows(near, contracts, quotes)
+    # Every contract quoted on the snapshot, from the current leg on, as columns.
+    legs = [c for c in sorted(contracts, key=lambda c: c.expiry)
+            if c.symbol in quotes and c.expiry >= near.expiry]
     logger.info("Rollover %s on %s (last record %s):", near.symbol, snapshot,
                 last_record.isoformat(timespec="minutes") if last_record else "?")
     for r in rows:
@@ -390,7 +475,7 @@ def main() -> int:
         return 0
 
     if args.out:
-        render(near, snapshot, rows, hurdle, args.out, last_record)
+        render_matrix(legs, quotes, near.symbol, snapshot, args.out, hurdle, last_record)
         logger.info("Rollover: rendered %s.", args.out)
         return 0
 
@@ -406,7 +491,7 @@ def main() -> int:
         return 1
 
     png = os.path.join(PROJECT_DIR, "logs", f"rollover_{key}.png")
-    render(near, snapshot, rows, hurdle, png, last_record)
+    render_matrix(legs, quotes, near.symbol, snapshot, png, hurdle, last_record)
     try:
         report.post(space, f"Roll cost from {near.symbol} · snapshot {snapshot:%Y-%m-%d}", png)
     except Exception as exc:  # noqa: BLE001
