@@ -450,6 +450,12 @@ def report_latest(cfg: dict, ws, legs, slot) -> None:
     day, at, quotes = slot
     stamp = f"{day:%Y-%m-%d} {at:%H:%M}"
 
+    # The rollover matrix (rollover.py, its own task at 10:00) replaced this
+    # image in Chat on 2026-11-24; the sheet is still filled every slot.
+    if not cfg.get("heatmap_report", True):
+        logger.info("%s logged — heatmap report off (heatmap_report=false).", stamp)
+        return
+
     local, _ = snapshot_times(cfg, day, at)
     behind = datetime.now(local.tzinfo) - local
     grace = timedelta(minutes=cfg.get("report_grace_minutes", 30))

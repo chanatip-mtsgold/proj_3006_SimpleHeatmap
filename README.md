@@ -231,6 +231,9 @@ GO*26, GOH27  TFEX        ชำระเงินสด  รายไตรม�
 หลังเขียนแถวเสร็จ `simple_heatmap.py` จะ render `Front` เป็น PNG แล้วโพสต์เข้า space
 ที่ตั้งไว้ในคีย์ `HeatmapSpace` ของ `..\.env\Path.env` โดยอัตโนมัติ
 
+> **ปิดอยู่ตั้งแต่ 2026-11-24** (`"heatmap_report": false` ใน `config.json`) — รูปที่ส่งเข้า `HeatmapSpace`
+> เปลี่ยนเป็น rollover matrix ตอน 10:00 แทน ราคายังเก็บลงชีตทุกรอบตามเดิม ตั้งเป็น `true` เพื่อเปิดกลับ
+
 **ไม่ได้ทำเป็น task แยกใน Task Scheduler** — Scheduler ผูก task ต่อกันได้ทางเดียวคือ
 trigger จาก event log ตอน task ก่อนหน้าจบ ซึ่งบอกไม่ได้ว่าจบแบบสำเร็จหรือ error
 และยังต้องเดาว่าต้องหน่วงนานแค่ไหน เรียกในโปรเซสเดียวกันหลัง append รู้ผลแน่นอนกว่า
@@ -285,9 +288,9 @@ cost%  = spread / Near_BID × 360 / (Far_Expiry − Near_Expiry)      ACT/360
   (`Near_BID × hurdle × days / 360`) ใช้เป็นราคาที่ควรตั้ง roll — spread จริงต่ำกว่าเลขนี้เมื่อไหร่ cost ต่ำกว่า hurdle
 - ช่อง Cost % เป็น**สีเขียวเมื่อต่ำกว่า hurdle** (`roll_hurdle_pct` ใน `config.json`, ตั้งไว้ 4.50%)
 - ขาที่ `Stale Flag` ติ๊กมีเครื่องหมาย `*` ขาไหนไม่มีราคาแสดง `—`
-- ส่งเข้า space ตามคีย์ `rollover_space_key` ใน `config.json` (ตอนนี้ `TestSpace` ใน `..\.env\Path.env`)
+- ส่งเข้า space ตามคีย์ `rollover_space_key` ใน `config.json` (ตอนนี้ `HeatmapSpace` ใน `..\.env\Path.env`)
 - **ไม่ส่งซ้ำ** — จำ `(snapshot, ขาใกล้)` ที่ส่งล่าสุดไว้ใน `logs/rollover_last.json`
-- Airtable อัปเดตราว 14:00–14:30 จึงตั้ง task ไว้ 15:00 จันทร์–ศุกร์
+- task รัน 10:00 จันทร์–ศุกร์ (เดิม 15:00) — Airtable อัปเดตราว 14:00–14:30 รูปตอน 10:00 จึงเป็นข้อมูลของบ่ายวันก่อน
 
 ต้องมี Airtable Personal Access Token (scope `data.records:read` บน base นี้) ใน
 `..\.env\Airtable.env` (ใส่ token เปล่า ๆ บรรทัดเดียวก็ได้):

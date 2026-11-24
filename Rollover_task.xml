@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>proj_3006 Rollover - post COMEX roll cost (from Airtable) to Google Chat at 15:00 Thai time on weekdays.</Description>
+    <Description>proj_3006 Rollover - post COMEX roll cost (from Airtable) to Google Chat at 10:00 Thai time on weekdays.</Description>
     <URI>\SimpleHeatmap_Rollover</URI>
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>
-      <StartBoundary>2026-11-12T15:00:00</StartBoundary>
+      <StartBoundary>2026-11-12T10:00:00</StartBoundary>
       <Enabled>true</Enabled>
       <ScheduleByWeek>
         <DaysOfWeek>

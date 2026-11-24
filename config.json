@@ -10,8 +10,9 @@
   "max_backfill_days": 10,
   "timezone": "Asia/Bangkok",
   "report_grace_minutes": 30,
+  "heatmap_report": false,
   "unquoted_symbols": [],
   "swap_spreadsheet_id": "1iif_3doTcMPf3y8c-dMULNYnGA56QhfSMIpg7575IGQ",
   "roll_hurdle_pct": 4.8,
-  "rollover_space_key": "TestSpace"
+  "rollover_space_key": "HeatmapSpace"
 }
